@@ -1,0 +1,21 @@
+{
+  "name": "readable",
+  "version": "0.4.0",
+  "description": "Styled replies and prompts: Markdown drawn with solid panels for code, quotes, prompts and pastes",
+  "author": { "name": "Emil Thaudal Bønnerup" },
+  "userConfig": {
+    "theme": {
+      "type": "string",
+      "title": "Theme",
+      "description": "embark matches the Embark terminal theme; dark uses the colours of glamour's dark style.",
+      "default": "embark",
+      "options": ["embark", "dark"]
+    },
+    "sentencePerLine": {
+      "type": "boolean",
+      "title": "One sentence per line",
+      "description": "Start each sentence of a reply on a line of its own.",
+      "default": true
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "gh-account",
+  "version": "0.2.0",
+  "description": "Runs gh and git network commands as the GitHub account for their directory or org, with no gh auth switch",
+  "author": { "name": "emilthaudal" },
+  "userConfig": {
+    "rules": {
+      "type": "string",
+      "title": "Account rules",
+      "description": "Comma-separated <directory>=<account> or org:<org>=<account>, e.g. ~/work=me-work, org:acme=me-work. An org the command names wins, then the deepest directory it runs in. Empty: no rules.",
+      "default": ""
+    },
+    "default": {
+      "type": "string",
+      "title": "Default account",
+      "description": "The account for gh and git commands no rule matches. Empty: they run as the active gh account.",
+      "default": ""
+    }
+  }
+}

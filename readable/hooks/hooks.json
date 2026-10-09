@@ -1,0 +1,4 @@
+{
+  "description": "The readable hooks module",
+  "modules": ["./register.ts"]
+}

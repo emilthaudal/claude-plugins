@@ -1,0 +1,22 @@
+{
+  "name": "emil-plugins",
+  "description": "Emil's Claude Code plugins and mods",
+  "owner": { "name": "emilthaudal" },
+  "plugins": [
+    {
+      "name": "readable",
+      "source": "./readable",
+      "description": "Styled replies and prompts (Embark or glamour dark), with solid panels for code, quotes, prompts and pastes"
+    },
+    {
+      "name": "agent-progress",
+      "source": "./agent-progress",
+      "description": "A band above the prompt: turn timer with usual command durations, context meter, CI status after a push, waiting-on-you, workflow progress"
+    },
+    {
+      "name": "gh-account",
+      "source": "./gh-account",
+      "description": "Runs gh and git network commands as the GitHub account for their directory or org, with no gh auth switch"
+    }
+  ]
+}

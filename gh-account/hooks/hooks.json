@@ -1,0 +1,4 @@
+{
+  "description": "The gh-account hooks module",
+  "modules": ["./register.ts"]
+}

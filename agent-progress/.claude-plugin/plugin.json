@@ -1,0 +1,51 @@
+{
+  "name": "agent-progress",
+  "version": "0.3.0",
+  "description": "A band above the prompt: turn timer with usual command durations, context meter, CI status after a push, waiting-on-you, workflow progress",
+  "author": { "name": "Emil Thaudal Bønnerup" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "watchCi": {
+      "type": "boolean",
+      "title": "Watch CI after a push",
+      "description": "After git push or gh pr create, show the pushed commit's GitHub checks in the band until they finish (needs gh)",
+      "default": true
+    },
+    "tellClaudeWhenCiFinishes": {
+      "type": "boolean",
+      "title": "Tell Claude when CI finishes",
+      "description": "When watched CI finishes while Claude is idle, send Claude the result so it can carry on",
+      "default": true
+    },
+    "notifications": {
+      "type": "boolean",
+      "title": "macOS notifications",
+      "description": "Notify when Claude has waited 30s for your answer and when watched CI finishes",
+      "default": true
+    },
+    "sounds": {
+      "type": "boolean",
+      "title": "Sounds",
+      "description": "Play a macOS system sound when Claude waits for you and when watched CI finishes",
+      "default": true
+    },
+    "contextWarnTokens": {
+      "type": "number",
+      "title": "Context amber at (tokens)",
+      "description": "The context meter turns amber above this many tokens (or at 70% of the window)",
+      "default": 200000
+    },
+    "contextBadTokens": {
+      "type": "number",
+      "title": "Context red at (tokens)",
+      "description": "The context meter turns red and suggests /compact above this many tokens (or at 85% of the window)",
+      "default": 300000
+    },
+    "paletteFile": {
+      "type": "string",
+      "title": "Palette file",
+      "description": "A JSON file overriding the band's colours (see the README); ~ is your home folder. Missing is fine.",
+      "default": "~/.claude/aurora-palette.json"
+    }
+  }
+}
