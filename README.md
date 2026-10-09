@@ -2,6 +2,8 @@
 
 Mods for Claude Code: plugins of function hooks that change how the terminal looks and behaves.
 
+![readable styling a reply and agent-progress timing a command](docs/demo.gif)
+
 | Mod | What it does |
 | --- | --- |
 | [readable](readable/README.md) | Draws replies and prompts as styled Markdown, with solid panels for code, quotes, prompts and pastes |
@@ -34,3 +36,5 @@ Saving a file reloads the mod in running sessions. Check a mod with:
 claude plugin validate <mod>
 claude plugin test <mod>
 ```
+
+Re-record the demo with [VHS](https://github.com/charmbracelet/vhs) from the repo root: `vhs docs/demo.tape`.
