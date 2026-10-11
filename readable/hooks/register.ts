@@ -1,9 +1,9 @@
-import type { Register } from 'claude-code'
+import type { Hook, Register } from 'claude-code'
 import { parse, type Block } from './markdown'
 import { pasteShown, promptParts } from './prompt'
 import { render, type Row } from './render'
 import { oneSentencePerLine } from './sentences'
-import { over, THEMES, type Theme, type ThemeName } from './theme'
+import { fromPalette, over, parseGhosttyConfig, THEMES, type Theme, type ThemeName } from './theme'
 
 // MARK: Reply rows
 
@@ -46,15 +46,39 @@ type Options = { theme: ThemeName; sentencePerLine: boolean }
 
 function readOptions(raw: unknown): Options {
   const options = (raw ?? {}) as Record<string, unknown>
-  const theme = typeof options.theme === 'string' && options.theme in THEMES ? (options.theme as ThemeName) : 'embark'
-  return { theme, sentencePerLine: options.sentencePerLine !== false }
+  const isNamed = options.theme === 'ghostty' || (typeof options.theme === 'string' && options.theme in THEMES)
+  return { theme: isNamed ? (options.theme as ThemeName) : 'ghostty', sentencePerLine: options.sentencePerLine !== false }
+}
+
+// MARK: Ghostty
+
+type Engine = Parameters<Hook<'ui.render'>>[0]
+
+// Ghostty puts its bin directory in the environment of everything it starts, herdr's panes included, and
+// show-config prints the theme's colours already resolved, so no theme file has to be found.
+async function ghosttyTheme($: Engine): Promise<Theme | undefined> {
+  const dir = await $.env.get('GHOSTTY_BIN_DIR')
+  if (dir === undefined || dir === '') return undefined
+  const { exitCode, stdout } = await $.process.run([`${dir}/ghostty`, '+show-config'], { timeoutMs: 5000 })
+  const palette = exitCode === 0 ? parseGhosttyConfig(stdout) : undefined
+  return palette && fromPalette(palette)
+}
+
+// Ghostty's colours are read once, on the first draw; outside Ghostty, or when they cannot be read, Embark's stand in.
+let ghostty: Promise<Theme> | undefined
+function themeFor($: Engine, name: ThemeName): Promise<Theme> {
+  if (name !== 'ghostty') return Promise.resolve(THEMES[name])
+  ghostty ??= ghosttyTheme($).then(
+    theme => theme ?? THEMES.embark,
+    () => THEMES.embark,
+  )
+  return ghostty
 }
 
 // MARK: Hooks
 
 export const register: Register = (on, raw) => {
   const options = readOptions(raw)
-  const theme: Theme = THEMES[options.theme]
   const reshape = (blocks: Block[]) => (options.sentencePerLine ? oneSentencePerLine(blocks) : blocks)
   const recent = new RecentRows(200)
 
@@ -62,6 +86,7 @@ export const register: Register = (on, raw) => {
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     // A summary keeps the engine's faint "· summary" mark, which rows of readable's own would drop.
     if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
+    const theme = await themeFor($, options.theme)
     const columns = (e.viewport?.columns ?? UNMEASURED_COLUMNS) - EDGE
     const first = e.props.isFirstOfReply === true
     const rows = recent.get(`${columns}:${first}:${e.props.text}`, () => {
@@ -86,6 +111,7 @@ export const register: Register = (on, raw) => {
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || e.props.origin.kind !== 'composer') return next(e)
     const { Box, Text } = $.ui.resolve(e)
+    const theme = await themeFor($, options.theme)
     const { mark: markColor, ...prompt } = theme.prompt
     const { label: labelColor, ...pasted } = theme.paste
     const mark = over(prompt, { color: markColor, bold: true })

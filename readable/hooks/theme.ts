@@ -207,9 +207,141 @@ const DARK: Theme = {
   paste: { color: xterm(252), backgroundColor: '#1f2433', label: xterm(243) },
 }
 
+// MARK: Ghostty
+
+/** A terminal's colours: its background, foreground and the 16 ANSI colours, each `#rrggbb`. */
+export type Palette = { background: string; foreground: string; ansi: string[] }
+
+const HEX = /^#?([0-9a-f]{6})$/i
+const hex = (value: string) => {
+  const match = HEX.exec(value)
+  return match === null ? undefined : `#${(match[1] as string).toLowerCase()}`
+}
+
+/** Reads the colours out of `ghostty +show-config`; undefined when any of the 18 is missing. */
+export function parseGhosttyConfig(text: string): Palette | undefined {
+  let background: string | undefined
+  let foreground: string | undefined
+  const ansi: (string | undefined)[] = []
+  for (const line of text.split('\n')) {
+    const match = /^\s*([a-z-]+)\s*=\s*(.*?)\s*$/.exec(line)
+    if (match === null) continue
+    const key = match[1] as string
+    const value = match[2] as string
+    if (key === 'background') background = hex(value)
+    else if (key === 'foreground') foreground = hex(value)
+    else if (key === 'palette') {
+      const entry = /^(\d+)=(.+)$/.exec(value)
+      if (entry !== null && Number(entry[1]) < 16) ansi[Number(entry[1])] = hex(entry[2] as string)
+    }
+  }
+  const colors = Array.from({ length: 16 }, (_, i) => ansi[i])
+  if (background === undefined || foreground === undefined || colors.some(c => c === undefined)) return undefined
+  return { background, foreground, ansi: colors as string[] }
+}
+
+const rgb = (color: string) => [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16))
+const toHex = (c: number[]) => `#${c.map(v => Math.round(v).toString(16).padStart(2, '0')).join('')}`
+/** `a` moved a fraction `t` of the way towards `b`. */
+export function mix(a: string, b: string, t: number): string {
+  const to = rgb(b)
+  return toHex(rgb(a).map((v, i) => v + ((to[i] as number) - v) * t))
+}
+function luminance(color: string): number {
+  const [r, g, b] = rgb(color).map(v => v / 255).map(v => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)) as [number, number, number]
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+/** The WCAG contrast ratio of two colours, from 1 to 21. */
+export function contrast(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number]
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/** `color` moved towards `towards` only as far as it takes to reach `min` contrast on `on`. */
+function legible(color: string, on: string, towards: string, min: number): string {
+  for (let step = 0; step <= 20; step++) {
+    const tried = mix(color, towards, step / 20)
+    if (contrast(tried, on) >= min) return tried
+  }
+  return towards
+}
+
+/** Readable's looks drawn from a terminal's palette, each colour kept legible on the panel it sits on. */
+export function fromPalette({ background: bg, foreground: fg, ansi }: Palette): Theme {
+  const isDark = luminance(bg) < luminance(fg)
+  // As in Embark: on a dark terminal the code panel sits below the background and the others step above it.
+  const inset = isDark ? mix(bg, '#000000', 0.25) : mix(bg, fg, 0.04)
+  const raised = mix(bg, fg, isDark ? 0.05 : 0.08)
+  const surface = mix(bg, fg, isDark ? 0.1 : 0.13)
+  const border = mix(bg, fg, 0.25)
+  const extreme = isDark ? '#ffffff' : '#000000'
+  const [, red, green, yellow, blue, magenta, cyan, , dim] = ansi as [string, string, string, string, string, string, string, string, string]
+  const brightMagenta = ansi[13] as string
+  const brightWhite = ansi[15] as string
+
+  // Prose is held to 4.5:1 on the lightest panel it meets, code to 4.5:1 on the code panel.
+  const prose = (color: string) => legible(color, surface, extreme, 4.5)
+  const code = (color: string) => legible(color, inset, extreme, 4.5)
+  // Bright black is often a dim grey meant for hints; comments and captions get a lower floor but must still read.
+  const muted = legible(dim, surface, fg, 3.5)
+  const comment = legible(dim, inset, fg, 3.5)
+  const text = prose(fg)
+  const bright = prose(brightWhite === fg ? mix(fg, extreme, 0.4) : brightWhite)
+  const accent = prose(magenta)
+  const heading = prose(brightMagenta)
+
+  return {
+    text: { color: text },
+    strong: { color: bright, bold: true },
+    emph: { color: heading, italic: true },
+    strike: { strikethrough: true },
+    code: { color: prose(green), backgroundColor: surface },
+    linkText: { color: heading, bold: true },
+    url: { color: prose(cyan), underline: true },
+    caption: { color: muted },
+    imageUrl: { color: prose(red), underline: true },
+    heading: { color: heading, bold: true },
+    headings: {
+      1: { color: legible(inset, accent, isDark ? '#000000' : '#ffffff', 4.5), backgroundColor: accent, bold: true },
+      6: { color: muted, bold: false },
+    },
+    marker: { color: accent },
+    rule: { color: border },
+    table: { color: text },
+    quote: { color: text, backgroundColor: raised, italic: true },
+    codeBlock: { color: code(fg), backgroundColor: inset },
+    syntax: {
+      plain: { color: code(fg) },
+      comment: { color: comment, italic: true },
+      directive: { color: code(brightMagenta) },
+      keyword: { color: code(magenta) },
+      declaration: { color: code(magenta) },
+      module: { color: code(brightMagenta) },
+      type: { color: code(blue) },
+      builtin: { color: code(cyan) },
+      function: { color: code(yellow) },
+      class: { color: code(blue), bold: true },
+      decorator: { color: code(yellow) },
+      tag: { color: code(red) },
+      attribute: { color: code(brightMagenta) },
+      string: { color: code(green) },
+      escape: { color: code(cyan) },
+      number: { color: code(red) },
+      operator: { color: code(cyan) },
+      punctuation: { color: code(fg) },
+      added: { color: code(green) },
+      removed: { color: code(red) },
+      hunk: { color: comment },
+      header: { color: code(fg), bold: true },
+    },
+    prompt: { color: bright, backgroundColor: surface, mark: accent },
+    paste: { color: text, backgroundColor: raised, label: muted },
+  }
+}
+
 // MARK: Choice
 
-/** The themes the `theme` option picks between; plugin.json lists the same names. */
+/** The fixed themes the `theme` option picks between; plugin.json lists them after `ghostty`. */
 export const THEMES = { embark: EMBARK, dark: DARK } satisfies Record<string, Theme>
 
-export type ThemeName = keyof typeof THEMES
+export type ThemeName = keyof typeof THEMES | 'ghostty'

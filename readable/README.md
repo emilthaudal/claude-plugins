@@ -23,7 +23,7 @@ Set them in `/config`, or in `~/.claude/settings.json` under `pluginConfigs.read
 
 | Option | Values | Default |
 | --- | --- | --- |
-| `theme` | `embark`: matches the [Embark](https://github.com/embark-theme) terminal theme. `dark`: the colours of [glamour](https://github.com/charmbracelet/glamour)'s dark style. | `embark` |
+| `theme` | `ghostty`: the colours of [Ghostty](https://ghostty.org)'s current theme, read once when Claude starts, every colour held to a readable contrast; `embark` outside Ghostty. `embark`: matches the [Embark](https://github.com/embark-theme) terminal theme. `dark`: the colours of [glamour](https://github.com/charmbracelet/glamour)'s dark style. | `ghostty` |
 | `sentencePerLine` | Start each sentence of a reply on a line of its own. | `true` |
 
 Both themes assume a dark terminal background.

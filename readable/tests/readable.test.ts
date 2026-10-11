@@ -1,6 +1,7 @@
-import { expect, test, type TestBody } from 'claude-code/testing'
+import { expect, mock, test, type TestBody } from 'claude-code/testing'
 import { highlight } from '../hooks/highlight'
 import { parse } from '../hooks/markdown'
+import { contrast, fromPalette, parseGhosttyConfig } from '../hooks/theme'
 
 // MARK: Harness
 
@@ -354,4 +355,73 @@ test('draws in glamour’s dark colours when the theme option says dark', { opti
 
 test('keeps sentences together when sentence per line is off', { options: { sentencePerLine: false } }, async $ => {
   expect(await lines($, 'First one. Second one!')).toEqual(['  First one. Second one!'])
+})
+
+// MARK: Ghostty
+
+// What `ghostty +show-config` prints for Rosé Pine Moon, trimmed to the lines readable reads and a few it skips.
+const ROSE_PINE_MOON = [
+  'font-family = Monaspace Neon NF',
+  'theme = Rose Pine Moon',
+  'background = #232136',
+  'foreground = #e0def4',
+  'selection-background = #44415a',
+  ...['#393552', '#eb6f92', '#3e8fb0', '#f6c177', '#9ccfd8', '#c4a7e7', '#ea9a97', '#e0def4'].map((c, i) => `palette = ${i}=${c}`),
+  ...['#6e6a86', '#eb6f92', '#3e8fb0', '#f6c177', '#9ccfd8', '#c4a7e7', '#ea9a97', '#e0def4'].map((c, i) => `palette = ${i + 8}=${c}`),
+].join('\n')
+
+function inGhostty(on: Parameters<TestBody>[1], stdout = ROSE_PINE_MOON) {
+  mock.env(on, { GHOSTTY_BIN_DIR: '/Applications/Ghostty.app/Contents/MacOS' })
+  const runs: string[][] = []
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    return { value: { exitCode: 0, stdout, stderr: '' } } as never
+  })
+  return runs
+}
+
+test('reads the background, foreground and 16 colours out of show-config', () => {
+  const palette = parseGhosttyConfig(ROSE_PINE_MOON)
+  expect(palette?.background).toBe('#232136')
+  expect(palette?.foreground).toBe('#e0def4')
+  expect(palette?.ansi).toHaveLength(16)
+  expect(palette?.ansi[5]).toBe('#c4a7e7')
+  expect(parseGhosttyConfig('background = #232136\nforeground = #e0def4\npalette = 0=#393552')).toBeUndefined()
+})
+
+test('keeps every colour readable on the panel under it, lifting the ones that fall short', () => {
+  const theme = fromPalette(parseGhosttyConfig(ROSE_PINE_MOON)!)
+  const code = theme.codeBlock.backgroundColor!
+  for (const [name, look] of Object.entries(theme.syntax)) {
+    const floor = name === 'comment' || name === 'hunk' ? 3.5 : 4.5
+    expect(contrast(look.color!, code)).toBeGreaterThanOrEqual(floor)
+  }
+  // Rosé Pine's bright black is a hint grey too faint for comments, so it is lifted; its iris already reads.
+  expect(contrast('#6e6a86', code)).toBeLessThan(3.5)
+  expect(theme.syntax.comment.color).not.toBe('#6e6a86')
+  expect(theme.syntax.keyword.color).toBe('#c4a7e7')
+  expect(contrast(theme.prompt.color!, theme.prompt.backgroundColor!)).toBeGreaterThanOrEqual(4.5)
+})
+
+test('draws in the colours of Ghostty’s theme, asking Ghostty once', async ($, on) => {
+  const runs = inGhostty(on)
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe('#e0def4')
+  expect(find(await prompt($), 'make it blue')?.props.backgroundColor).toBe(fromPalette(parseGhosttyConfig(ROSE_PINE_MOON)!).prompt.backgroundColor)
+  expect(runs).toEqual([['/Applications/Ghostty.app/Contents/MacOS/ghostty', '+show-config']])
+})
+
+test('falls back to Embark outside Ghostty or when Ghostty’s colours cannot be read', async ($, on) => {
+  inGhostty(on, 'theme = something-broken')
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe('#cbe3e7')
+})
+
+test('falls back to Embark when Ghostty is not the terminal', async ($, on) => {
+  mock.env(on, {})
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe('#cbe3e7')
+})
+
+test('leaves Ghostty alone when a fixed theme is chosen', { options: { theme: 'embark' } }, async ($, on) => {
+  const runs = inGhostty(on)
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe('#cbe3e7')
+  expect(runs).toEqual([])
 })

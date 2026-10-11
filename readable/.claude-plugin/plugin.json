@@ -1,15 +1,15 @@
 {
   "name": "readable",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Styled replies and prompts: Markdown drawn with solid panels for code, quotes, prompts and pastes",
   "author": { "name": "Emil Thaudal Bønnerup" },
   "userConfig": {
     "theme": {
       "type": "string",
       "title": "Theme",
-      "description": "embark matches the Embark terminal theme; dark uses the colours of glamour's dark style.",
-      "default": "embark",
-      "options": ["embark", "dark"]
+      "description": "ghostty takes the colours of Ghostty's current theme (embark outside Ghostty); embark matches the Embark terminal theme; dark uses the colours of glamour's dark style.",
+      "default": "ghostty",
+      "options": ["ghostty", "embark", "dark"]
     },
     "sentencePerLine": {
       "type": "boolean",
