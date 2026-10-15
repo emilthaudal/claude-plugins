@@ -227,6 +227,9 @@ function inlineSpans(nodes: Inline[], look: Look, theme: Theme): Span[] {
 
 type Frame = { theme: Theme; width: number; look: Look; nested: boolean }
 
+/** Where a code block's panel starts: the reply's margin and the block's own. */
+export const BLOCK_MARGIN = MARGIN + CODE.margin
+
 function stack(blocks: Block[], frame: Frame): Row[] {
   return blocks.flatMap((block, i) => (i === 0 ? blockRows(block, frame) : [blank(), ...blockRows(block, frame)]))
 }
@@ -363,8 +366,31 @@ function table(block: Extract<Block, { type: 'table' }>, { theme, width, look }:
 
 // MARK: Reply
 
-/** Lays a parsed reply out at `columns` cells wide, inside the document margin on each side. */
-export function render(blocks: Block[], theme: Theme, columns: number): Row[] {
-  const rows = stack(blocks, { theme, width: Math.max(columns - MARGIN * 2, 1), look: theme.text, nested: false })
-  return prefixed(rows, pad(MARGIN, {}))
+/** A run of a reply's rows, and the raw text a copy button under them takes when they end in a code block or quote. */
+export type Part = { rows: Row[]; copy?: string }
+
+// What a copy of a block puts on the clipboard: its text without the panel, bar or `>` markers around it.
+function rawOf(block: Block): string | undefined {
+  if (block.type === 'code') return block.value
+  if (block.type === 'blockquote') return block.source
+  return undefined
+}
+
+/**
+ * Lays a parsed reply out at `columns` cells wide, inside the document margin on each side, cut after each top-level
+ * code block and quote so a copy button can sit under it.
+ */
+export function render(blocks: Block[], theme: Theme, columns: number): Part[] {
+  const frame = { theme, width: Math.max(columns - MARGIN * 2, 1), look: theme.text, nested: false }
+  const parts: Part[] = [{ rows: [] }]
+  for (const [i, block] of blocks.entries()) {
+    const part = parts.at(-1) as Part
+    if (i > 0) part.rows.push(blank())
+    part.rows.push(...blockRows(block, frame))
+    const copy = rawOf(block)
+    if (copy === undefined) continue
+    part.copy = copy
+    parts.push({ rows: [] })
+  }
+  return parts.filter(part => part.rows.length > 0).map(part => ({ ...part, rows: prefixed(part.rows, pad(MARGIN, {})) }))
 }

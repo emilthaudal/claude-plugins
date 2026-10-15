@@ -19,7 +19,8 @@ export type Block =
   | { type: 'paragraph'; children: Inline[] }
   | { type: 'heading'; depth: number; children: Inline[] }
   | { type: 'code'; lang: string; value: string }
-  | { type: 'blockquote'; children: Block[] }
+  // `source` is the quote's Markdown without its `>` markers, what a copy of the quote takes.
+  | { type: 'blockquote'; source: string; children: Block[] }
   | { type: 'list'; ordered: boolean; start: number; items: Item[] }
   | { type: 'thematicBreak' }
   | { type: 'table'; align: Align[]; header: Inline[][]; rows: Inline[][][] }
@@ -182,7 +183,7 @@ class BlockReader {
       else if (!isBlank(line) && !isBlank(inner.at(-1)) && !interrupts(line)) inner.push(line)
       else break
     }
-    return { type: 'blockquote', children: new BlockReader(inner).blocks() }
+    return { type: 'blockquote', source: inner.join('\n').trim(), children: new BlockReader(inner).blocks() }
   }
 
   private list(): Block | undefined {

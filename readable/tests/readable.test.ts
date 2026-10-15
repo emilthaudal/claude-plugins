@@ -27,14 +27,18 @@ function leaves(node: unknown, out: Leaf[] = []): Leaf[] {
 
 const textOf = (node: unknown) => leaves(node).map(leaf => leaf.text).join('')
 const find = (node: unknown, text: string) => leaves(node).find(leaf => leaf.text.includes(text))
-// A reply is one Text whose rows are separated by newline strings; each row comes back as a Box of its spans.
+// A reply is Texts whose rows are separated by newline strings, a copy button between them after a code block or quote;
+// each row comes back as a Box of its spans.
 function rowsOf(root: Element): Element[] {
-  const rows: Element[] = [{ type: 'Box', children: [] }]
-  for (const kid of (root.children?.[0] as Element | undefined)?.children ?? []) {
-    if (kid === '\n') rows.push({ type: 'Box', children: [] })
-    else rows.at(-1)?.children?.push(kid)
-  }
-  return rows
+  const texts = (root.children ?? []).filter((kid): kid is Element => (kid as Element).type === 'Text')
+  return texts.flatMap(text => {
+    const rows: Element[] = [{ type: 'Box', children: [] }]
+    for (const kid of text.children ?? []) {
+      if (kid === '\n') rows.push({ type: 'Box', children: [] })
+      else rows.at(-1)?.children?.push(kid)
+    }
+    return rows
+  })
 }
 
 async function reply($: Engine, text: unknown, props: Record<string, unknown> = {}, columns = COLUMNS): Promise<Element> {
@@ -228,6 +232,46 @@ test('highlights code by its fence language, tabs drawn as spaces', async $ => {
   expect(find(root, 'main')?.props.color).toBe('#ffe6b3')
   expect(find(root, '"hi"')?.props.color).toBe('#a1efd3')
   expect(find(root, '(')?.props.color).toBe('#cbe3e7')
+})
+
+// MARK: Copy buttons
+
+async function copied($: Engine, on: Parameters<TestBody>[1], markdown: string, key = 'copy-0'): Promise<string | undefined> {
+  let text: string | undefined
+  on('ui.copy', ($, e) => {
+    text = e.text
+    return { value: { isCopied: true } }
+  })
+  const ui = await $.ui.mount({
+    plugin: 'readable',
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    props: { text: markdown, isFirstOfReply: false } as never,
+    viewport: { columns: COLUMNS, rows: 40 },
+  })
+  await ui.press({ key })
+  return text
+}
+
+test('copies a code block’s text without its panel', async ($, on) => {
+  expect(await copied($, on, 'In the queue:\n\n```\n3102-20048467\n3000-20019033\n```\n\nDone.')).toBe('3102-20048467\n3000-20019033')
+})
+
+test('copies a quote’s text without its bar or markers', async ($, on) => {
+  expect(await copied($, on, '> Hi team,\n> please resend **these**.\n>\n> Thanks')).toBe('Hi team,\nplease resend **these**.\n\nThanks')
+})
+
+test('gives each code block and quote a button of its own, and prose none', async ($, on) => {
+  expect(await copied($, on, 'one\n\n```\na\n```\n\ntwo\n\n> b', 'copy-1')).toBe('b')
+  const ui = await $.ui.mount({
+    plugin: 'readable',
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    props: { text: 'one\n\n```\na\n```\n\ntwo\n\n> b', isFirstOfReply: false } as never,
+    viewport: { columns: COLUMNS, rows: 40 },
+  })
+  expect(await ui.findAll({ type: 'Button' })).toHaveLength(2)
+  expect(await lines($, 'just prose')).toEqual(['  just prose'])
 })
 
 test('draws code of an unknown language plain on the panel', async $ => {

@@ -1,7 +1,7 @@
 import type { Hook, Register } from 'claude-code'
 import { parse, type Block } from './markdown'
 import { pasteShown, promptParts } from './prompt'
-import { render, type Row } from './render'
+import { BLOCK_MARGIN, render, type Part } from './render'
 import { oneSentencePerLine } from './sentences'
 import { fromPalette, over, parseGhosttyConfig, THEMES, type Theme, type ThemeName } from './theme'
 
@@ -17,11 +17,11 @@ const PASTE_BAR = '▎'
 
 /** Laid-out rows of recent replies: a reply redraws on every scroll and resize, but its text and width rarely change. */
 class RecentRows {
-  private readonly rows = new Map<string, Row[]>()
+  private readonly rows = new Map<string, Part[]>()
 
   constructor(private readonly capacity: number) {}
 
-  get(key: string, lay: () => Row[]): Row[] {
+  get(key: string, lay: () => Part[]): Part[] {
     const hit = this.rows.get(key)
     // Insertion order is recency: a hit moves to the back, and the front is the first to go.
     this.rows.delete(key)
@@ -33,11 +33,13 @@ class RecentRows {
 }
 
 // The first message of a reply carries the engine's `●`, in the margin left of the text.
-function marked(rows: Row[], theme: Theme): Row[] {
-  const [first, ...rest] = rows
+function marked(parts: Part[], theme: Theme): Part[] {
+  const [head, ...tail] = parts
+  const [first, ...rest] = head?.rows ?? []
   const margin = first?.[0]
-  if (first === undefined || margin === undefined || !margin.text.startsWith(' ')) return rows
-  return [[{ text: REPLY_MARK, look: theme.text }, { ...margin, text: margin.text.slice(1) }, ...first.slice(1)], ...rest]
+  if (head === undefined || first === undefined || margin === undefined || !margin.text.startsWith(' ')) return parts
+  const row = [{ text: REPLY_MARK, look: theme.text }, { ...margin, text: margin.text.slice(1) }, ...first.slice(1)]
+  return [{ ...head, rows: [row, ...rest] }, ...tail]
 }
 
 // MARK: Options
@@ -89,22 +91,39 @@ export const register: Register = (on, raw) => {
     const theme = await themeFor($, options.theme)
     const columns = (e.viewport?.columns ?? UNMEASURED_COLUMNS) - EDGE
     const first = e.props.isFirstOfReply === true
-    const rows = recent.get(`${columns}:${first}:${e.props.text}`, () => {
+    const parts = recent.get(`${columns}:${first}:${e.props.text}`, () => {
       const blocks = reshape(parse(e.props.text))
       if (blocks.length === 0) return []
       const laid = render(blocks, theme, columns)
       return first ? marked(laid, theme) : laid
     })
-    if (rows.length === 0) return next(e)
+    if (parts.length === 0) return next(e)
 
-    const { Box, Text } = $.ui.resolve(e)
-    // The reply is one Text, its rows joined by newlines: nested Texts are not layout nodes, so the engine lays out one
-    // node per reply instead of one per row, which a resumed session pays for every message at once.
+    const { Box, Button, Text } = $.ui.resolve(e)
+    // Each part is one Text, its rows joined by newlines: nested Texts are not layout nodes, so the engine lays out one
+    // node per part instead of one per row, which a resumed session pays for every message at once.
     // Links are text with the URL after them, not Link elements: a terminal without OSC 8 (tmux) prints a Link's URL
     // again after it, unmeasured, which overflows the row.
-    const children = rows.flatMap((row, i) => [...(i > 0 ? ['\n'] : []), ...row.map(span => Text({ ...span.look, children: [span.text] }))])
+    const drawn = parts.flatMap((part, p) => {
+      const children = part.rows.flatMap((row, i) => [...(i > 0 ? ['\n'] : []), ...row.map(span => Text({ ...span.look, children: [span.text] }))])
+      const text = Text({ children })
+      if (part.copy === undefined) return [text]
+      const raw = part.copy
+      // Selecting a panel with the mouse takes its padding and bar along; the button copies the block's text alone.
+      const copy = Button({
+        key: `copy-${p}`,
+        label: 'copy',
+        plain: true,
+        dimColor: true,
+        onPress: async press => {
+          const { isCopied } = await $.ui.copy({ text: raw, surface: press.surface })
+          $.ui.toast(isCopied ? 'Copied' : 'Could not copy')
+        },
+      })
+      return [text, Box({ paddingLeft: BLOCK_MARGIN, children: [copy] })]
+    })
     // A blank row above and below sets the reply apart from the rows around it.
-    return Box({ marginTop: 1, marginBottom: 1, children: [Text({ children })] })
+    return Box({ flexDirection: 'column', marginTop: 1, marginBottom: 1, children: drawn })
   }).catch(($, e, next) => next(e))
 
   // The person's own prompts sit on a panel; notifications and other agents' messages keep the engine's drawing.
