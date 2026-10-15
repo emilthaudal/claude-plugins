@@ -1,6 +1,6 @@
 {
   "name": "readable",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Styled replies and prompts: Markdown drawn with solid panels for code, quotes, prompts and pastes",
   "author": { "name": "Emil Thaudal Bønnerup" },
   "userConfig": {

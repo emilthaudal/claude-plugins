@@ -5,6 +5,7 @@ A Claude Code mod that draws Claude's replies, and your own prompts, as styled M
 - **Prose** in the theme's text colour, with bold, italics, links and inline code styled.
 - **Code blocks** on a solid panel, highlighted by language.
 - **Quotes** on a lighter panel with a bar.
+- **A copy button** under each code block and quote, which copies the text alone: no panel padding, bar or `>` markers.
 - **Lists, tables and headings** laid out to the terminal's width.
 - **Your prompts** on a panel with a `❯` mark. A paste shows as an inset block labelled `pasted · N lines`, folded to 8 lines until you expand the transcript with ctrl+o.
 - **One sentence per line** in replies, so long paragraphs are easier to scan.
