@@ -1,0 +1,7 @@
+{
+  "name": "pr-card",
+  "version": "0.1.0",
+  "description": "Draws a PR card under git push and gh pr commands: commit graph by branch, merge state and conflicts, CI checks; plus the PR's status above the prompt",
+  "author": { "name": "Emil Thaudal Bønnerup" },
+  "types": "./types/index.d.ts"
+}

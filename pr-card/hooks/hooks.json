@@ -1,0 +1,4 @@
+{
+  "description": "The pr-card hooks module",
+  "modules": ["./register.ts"]
+}

@@ -8,6 +8,7 @@ Mods for Claude Code: plugins of function hooks that change how the terminal loo
 | --- | --- |
 | [readable](readable/README.md) | Draws replies and prompts as styled Markdown, with solid panels for code, quotes, prompts and pastes |
 | [gh-account](gh-account/README.md) | Runs `gh` and git network commands as the right GitHub account for the folder or org, with no `gh auth switch` |
+| [pr-card](pr-card/README.md) | Draws a PR card under `git push` and `gh pr` commands (commit graph, merge state and conflicts, CI checks), and keeps the PR's status above the prompt |
 
 ## Install
 
@@ -16,6 +17,7 @@ In a Claude Code session, install any of them by name:
 ```
 /plugin install readable --marketplace emilthaudal/claude-plugins
 /plugin install gh-account --marketplace emilthaudal/claude-plugins
+/plugin install pr-card --marketplace emilthaudal/claude-plugins
 ```
 
 Answer `y` to add the marketplace, then pick a scope. Each mod's options are in its README and in `/config`.

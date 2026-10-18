@@ -12,6 +12,11 @@
       "name": "gh-account",
       "source": "./gh-account",
       "description": "Runs gh and git network commands as the GitHub account for their directory or org, with no gh auth switch"
+    },
+    {
+      "name": "pr-card",
+      "source": "./pr-card",
+      "description": "A PR card under git push and gh pr commands (commit graph, merge state and conflicts, CI checks), and the PR's status above the prompt"
     }
   ]
 }
