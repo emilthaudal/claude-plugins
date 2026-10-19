@@ -104,14 +104,17 @@ function row(ui: Elements, left: unknown[], right: unknown[]) {
 
 function commitRow(ui: Elements, commit: Extract<GraphRow, { kind: 'commit' }>, card: Card, gutter: number) {
   const { Text } = ui
-  const refs = commit.refs.flatMap(ref => [
-    ' ',
-    Text({ color: ref === card.base ? 'gray' : LANES[0], inverse: ref !== card.base, children: [` ${ref} `] }),
-  ])
+  const refs = commit.refs.flatMap(ref => {
+    const isBase = ref.replace(/^origin\//, '') === card.base
+    return [' ', Text({ color: isBase ? 'gray' : LANES[0], inverse: !isBase, children: [` ${ref} `] })]
+  })
+  const brings =
+    commit.brings > 0 ? [Text({ dimColor: true, children: [` +${commit.brings} ${commit.brings === 1 ? 'commit' : 'commits'}`] })] : []
   const left = [
     ...lanes(ui, commit.lanes.padEnd(gutter)),
     '  ',
-    Text({ dimColor: !commit.isMine || commit.isBoundary, children: [commit.subject] }),
+    Text({ dimColor: !commit.isMine || commit.isBoundary || commit.isBase, children: [commit.subject] }),
+    ...brings,
     ...refs,
   ]
   const right = [Text({ dimColor: true, children: [`${commit.sha}  ${commit.author} · ${commit.age}`] })]

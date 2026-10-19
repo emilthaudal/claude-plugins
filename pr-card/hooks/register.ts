@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 import type { Card } from '../types'
-import { directoryOf, type Kind, prCommand } from './command'
+import { directoryOf, type Kind, prCommand, pushedBranch } from './command'
 import { drawCard, drawPill } from './draw'
 import { gather, ghRunner, type Run } from './git'
 
@@ -32,14 +32,14 @@ type Session = {
 const isSettling = (card: Card | null) =>
   card !== null && card.state === 'open' && (card.checks.some(c => c.state === 'pending') || card.merge.kind === 'unknown')
 
-async function readCard($: Engine, session: Session, dir: string, kind: Kind): Promise<Card | null> {
+async function readCard($: Engine, session: Session, dir: string, kind: Kind, branch: string | null = null): Promise<Card | null> {
   const git: Run = async (argv, env) => {
     const { exitCode, stdout, stderr } = await $.process.run(argv, { cwd: dir, env, timeoutMs: 15_000 })
     return { exitCode, stdout, stderr }
   }
   const account = session.accounts.get(dir) ?? {}
   session.accounts.set(dir, account)
-  return gather(git, ghRunner(git, account), kind, await $.clock.now())
+  return gather(git, ghRunner(git, account), kind, await $.clock.now(), branch)
 }
 
 /** Shows `card` in the band, and reads it again in a minute while it is still settling. */
@@ -74,7 +74,8 @@ export const register: Register = on => {
     try {
       const [cwd, home] = await Promise.all([$.session.cwd(), $.env.get('HOME')])
       const dir = directoryOf(e.command, cwd, home ?? '/')
-      const card = await readCard($ as Engine, session, dir, kind)
+      // A push that names its branch is about that branch, wherever the command left the checkout.
+      const card = await readCard($ as Engine, session, dir, kind, kind === 'push' ? pushedBranch(e.command) : null)
       if (card !== null) {
         await update($, memberOf(cards, { requestId: e.tool_use_id }), () => card)
         session.bandDir = dir

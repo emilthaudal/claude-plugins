@@ -17,10 +17,15 @@ export type GraphRow =
       author: string
       isMine: boolean
       age: string
-      /** Branch names pointing at the commit, `origin/` dropped. */
+      /** Branch names pointing at the commit, `origin/` dropped unless the local branch points elsewhere. */
       refs: string[]
       /** The merge base `--boundary` adds below the branch's commits. */
       isBoundary: boolean
+      /** A commit the base has and the branch lacks, drawn `◇`. */
+      isBase: boolean
+      parents: string[]
+      /** For a merge into the branch: the commits it brings in that the base lacks. */
+      brings: number
     }
   | { kind: 'edge'; lanes: string }
 

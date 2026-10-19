@@ -1,23 +1,43 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
-import { directoryOf, prCommand } from '../hooks/command'
+import { directoryOf, prCommand, pushedBranch } from '../hooks/command'
 import { checkChips, diffBar, mergeLabel } from '../hooks/draw'
-import { branchRefs, conflictedFiles, ghRunner, mergeKind, parseChecks, parseGraph, type Pr, type Run, shortAge } from '../hooks/git'
+import {
+  branchRefs,
+  conflictedFiles,
+  ghRunner,
+  labelRefs,
+  mergeKind,
+  parseChecks,
+  parseGraph,
+  type Pr,
+  type Run,
+  shortAge,
+} from '../hooks/git'
 
 type Engine = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
 
 const NOW = Date.UTC(2026, 9, 18, 12)
 const ago = (minutes: number) => String(Math.floor(NOW / 1000) - minutes * 60)
-const line = (lanes: string, sha: string, subject: string, email: string, name: string, minutes: number, refs = '') =>
-  [lanes, sha, subject, email, name, ago(minutes), refs].join('\x1f')
+const line = (lanes: string, sha: string, subject: string, email: string, name: string, minutes: number, refs = '', mark = '>', parents = '') =>
+  [lanes, sha, subject, email, name, ago(minutes), refs, mark, parents].join('\x1f')
 
 // The branch and main each moved on from `Bump next to 16.3`.
 const GRAPH = [
-  line('* ', 'd29f50', 'Add session refresh tests', 'me@x.com', 'Ada Lovelace', 0, 'HEAD -> feat/session-refresh, origin/feat/session-refresh'),
-  line('| * ', 'a3f9c1', 'Rotate session keys', 'lena@x.com', 'Lena Berg', 18, 'origin/main'),
-  line('* | ', 'c70a92', 'Refresh sessions near expiry', 'me@x.com', 'Ada Lovelace', 25),
+  line('* ', 'd29f50', 'Add session refresh tests', 'me@x.com', 'Ada Lovelace', 0, 'HEAD -> feat/session-refresh, origin/feat/session-refresh', '>', 'c70a92'),
+  line('| * ', 'a3f9c1', 'Rotate session keys', 'lena@x.com', 'Lena Berg', 18, 'origin/main', '<', '9c2d4a'),
+  line('* | ', 'c70a92', 'Refresh sessions near expiry', 'me@x.com', 'Ada Lovelace', 25, '', '>', '9c2d4a'),
   '|/  ',
-  line('o ', '9c2d4a', 'Bump next to 16.3', 'sam@x.com', 'Sam Holt', 180, 'tag: v1.2.0'),
+  line('o ', '9c2d4a', 'Bump next to 16.3', 'sam@x.com', 'Sam Holt', 180, 'tag: v1.2.0', '-', '71e0b3'),
+].join('\n')
+
+// A stack mid-update, as the first-parent graph draws it: the branch merged its base's new tip, which isn't pushed.
+const STACK = [
+  line('*   ', 'a454ba8', 'Merge AS-480 into AS-479', 'me@x.com', 'Ada', 0, 'HEAD -> AS-479', '>', '668aba5 b597666'),
+  line('* ', '668aba5', 'AS-479: order pull', 'me@x.com', 'Ada', 60, 'origin/AS-479', '>', 'a36b6be'),
+  line('| o ', 'b597666', 'Merge AS-475 into AS-480', 'me@x.com', 'Ada', 1, 'AS-480', '-', 'a36b6be 6ddfca8'),
+  '|/  ',
+  line('o ', 'a36b6be', 'AS-480: webhook auth', 'me@x.com', 'Ada', 7200, 'origin/AS-480', '-', '8cb71fc'),
 ].join('\n')
 
 const PR: Pr = {
@@ -50,6 +70,16 @@ test('knows the commands that touch a PR', () => {
   }
 })
 
+test('finds the branch a push names', () => {
+  expect(pushedBranch('git push -q origin AS-476 2>&1 | tail -2')).toBe('AS-476')
+  expect(pushedBranch('git push -u --force-with-lease origin "feat/x"')).toBe('feat/x')
+  expect(pushedBranch('git push -o ci.skip origin +refs/heads/a:b')).toBe('a')
+  expect(pushedBranch('git push origin a && for b in c d; do git push origin "$b"; done')).toBe(null)
+  for (const command of ['git push', 'git push -u origin HEAD', 'git push origin --delete old', 'git push --all origin', 'git status']) {
+    expect(pushedBranch(command)).toBe(null)
+  }
+})
+
 test('finds the directory a command ran in', () => {
   expect(directoryOf('git push', '/repo', '/home/ada')).toBe('/repo')
   expect(directoryOf('cd ~/work/api && git push', '/repo', '/home/ada')).toBe('/home/ada/work/api')
@@ -62,10 +92,17 @@ test('finds the directory a command ran in', () => {
 test('reads the graph: lanes, authors, ages and branch names', () => {
   const { rows, more } = parseGraph(GRAPH, { email: 'ME@x.com', name: '' }, NOW)
   expect(more).toBe(0)
-  expect(rows.map(r => r.lanes)).toEqual(['●', '│ ●', '● │', '│/', '○'])
-  expect(rows[0]).toMatchObject({ kind: 'commit', author: 'You', isMine: true, age: 'now', refs: ['feat/session-refresh'] })
-  expect(rows[1]).toMatchObject({ author: 'Lena', isMine: false, age: '18m', refs: ['main'] })
-  expect(rows[4]).toMatchObject({ isBoundary: true, age: '3h', refs: [] })
+  expect(rows.map(r => r.lanes)).toEqual(['●', '│ ◇', '● │', '│/', '○'])
+  expect(rows[0]).toMatchObject({ kind: 'commit', author: 'You', isMine: true, age: 'now', refs: ['feat/session-refresh'], isBase: false })
+  expect(rows[1]).toMatchObject({ author: 'Lena', isMine: false, age: '18m', refs: ['main'], isBase: true })
+  expect(rows[4]).toMatchObject({ isBoundary: true, isBase: false, age: '3h', refs: [], parents: ['71e0b3'] })
+})
+
+test('keeps a local branch and its remote apart when they point at different commits', () => {
+  const { rows } = parseGraph(STACK, { email: 'me@x.com', name: '' }, NOW)
+  const refs = rows.flatMap(r => (r.kind === 'commit' ? [r.refs] : []))
+  expect(refs).toEqual([['AS-479'], ['origin/AS-479'], ['AS-480'], ['origin/AS-480']])
+  expect(rows[0]).toMatchObject({ parents: ['668aba5', 'b597666'], brings: 0 })
 })
 
 test('cuts a long graph after ten commits and counts the rest', () => {
@@ -79,7 +116,8 @@ test('cuts a long graph after ten commits and counts the rest', () => {
 
 test('shortens ages and branch decorations', () => {
   expect(shortAge(Number(ago(60 * 24 * 9)), NOW)).toBe('1w')
-  expect(branchRefs('HEAD -> a, origin/a, origin/HEAD, tag: v1, origin/b')).toEqual(['a', 'b'])
+  expect(branchRefs('HEAD -> a, origin/a, origin/HEAD, tag: v1, origin/b')).toEqual(['a', 'origin/a', 'origin/b'])
+  expect(labelRefs([['a', 'origin/a', 'origin/b'], ['origin/c']])).toEqual([['a', 'b'], ['c']])
 })
 
 test('reads checks, a re-run winning', () => {
@@ -148,12 +186,13 @@ test('a branch with no PR is no reason to try other accounts', async () => {
 // MARK: Hooks
 
 // Stands for the repository at /repo: answers git and gh from fixtures, and keeps each Bash call's id.
-function repo($: Engine, on: On, pr: Pr | null = PR): (command: string) => Promise<string> {
+function repo($: Engine, on: On, pr: Pr | null = PR, graph = GRAPH, calls: string[] = []): (command: string) => Promise<string> {
   mock.clock(on, { now: NOW })
   mock.env(on, { HOME: '/home/ada' })
   on('session.cwd', async () => ({ value: '/repo' }) as never)
   on('process.run', async (_, e) => {
     const argv = e.argv.join(' ')
+    calls.push(argv)
     const answer = (exitCode: number, stdout: string, stderr = '') => ({ value: { exitCode, stdout, stderr } }) as never
     if (argv === 'git rev-parse --abbrev-ref HEAD') return answer(0, 'feat/session-refresh\n')
     if (argv === 'git config user.email') return answer(0, 'me@x.com\n')
@@ -161,7 +200,8 @@ function repo($: Engine, on: On, pr: Pr | null = PR): (command: string) => Promi
     if (argv.startsWith('gh pr view')) return pr ? answer(0, JSON.stringify(pr)) : answer(1, '', 'no pull requests found')
     if (argv.startsWith('git rev-parse --verify')) return answer(0, 'abc\n')
     if (argv.startsWith('git symbolic-ref')) return answer(0, 'origin/main\n')
-    if (argv.startsWith('git log')) return answer(0, GRAPH)
+    if (argv.startsWith('git log')) return answer(0, graph)
+    if (argv.startsWith('git rev-list --count')) return answer(0, '4\n')
     if (argv.startsWith('git merge-tree')) return answer(1, 'tree\nsrc/auth.ts\nsrc/middleware.ts\n')
     return answer(1, '', `unexpected: ${argv}`)
   })
@@ -207,6 +247,23 @@ test('draws a card under a push', async ($, on) => {
   expect(text).toContain('Conflicts in src/auth.ts, src/middleware.ts')
   expect(text).toContain('Pushed to origin')
   expect(text).toContain('+482')
+})
+
+test('a push that names another branch draws that branch, not the checkout', async ($, on) => {
+  const calls: string[] = []
+  await repo($, on, PR, GRAPH, calls)('git commit -qam fix && git push -q origin AS-476 2>&1 | tail -2; git checkout AS-479')
+  expect(calls).toContain(`gh pr view AS-476 --json ${calls.find(c => c.startsWith('gh pr view'))?.split('--json ')[1]}`)
+  expect(calls.find(c => c.startsWith('git log'))).toEndWith('origin/main...refs/heads/AS-476')
+  expect(calls.find(c => c.startsWith('git merge-tree'))).toContain('refs/heads/AS-476 origin/main')
+})
+
+test('counts the commits a stack merge brings in', async ($, on) => {
+  const calls: string[] = []
+  const id = await repo($, on, PR, STACK, calls)('git push')
+  expect(calls).toContain('git rev-list --count b597666 ^668aba5 ^origin/main')
+  const text = await shown(await result($, id))
+  expect(text).toContain('Merge AS-480 into AS-479 +4 commits')
+  expect(text).toContain('origin/AS-480')
 })
 
 test('shows the PR above the prompt once a command has read it', async ($, on) => {

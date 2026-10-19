@@ -7,7 +7,7 @@ export type Run = (argv: string[], env?: Record<string, string>) => Promise<{ ex
 // The most commits the card lists; the rest are counted in a `… N more` row.
 const MAX_COMMITS = 10
 const SEP = '\x1f'
-const FORMAT = ['', '%h', '%s', '%ae', '%an', '%ct', '%D'].join('%x1f')
+const FORMAT = ['', '%h', '%s', '%ae', '%an', '%ct', '%D', '%m', '%p'].join('%x1f')
 const PR_FIELDS = 'number,title,state,isDraft,baseRefName,additions,deletions,mergeable,mergeStateStatus,statusCheckRollup'
 
 // MARK: Graph
@@ -28,18 +28,34 @@ export function shortAge(seconds: number, now: number): string {
   return `${Math.floor(s / size)}${unit}`
 }
 
-/** Branch names from `%D`, `origin/` dropped and each named once; HEAD and tags left out. */
+/** Branch names from `%D`, local and `origin/` alike; HEAD and tags left out. */
 export function branchRefs(decoration: string): string[] {
-  const names = decoration
+  return decoration
     .split(', ')
     .map(ref => ref.replace(/^HEAD -> /, ''))
     .filter(ref => ref !== '' && ref !== 'HEAD' && ref !== 'origin/HEAD' && !ref.startsWith('tag: '))
-    .map(ref => ref.replace(/^origin\//, ''))
-  return [...new Set(names)]
 }
 
-// The prefix holds graph characters alone, so its one `o` is the boundary commit's mark.
-const drawLanes = (lanes: string) => lanes.replace(/\*/g, '●').replace(/o/g, '○').replace(/\|/g, '│').trimEnd()
+/**
+ * Each commit's branch labels: a remote branch folds into its local one when both point at the commit, and drops
+ * `origin/` when the local one isn't in the graph. A local branch ahead of or behind its remote keeps both labels apart.
+ */
+export function labelRefs(refsByRow: string[][]): string[][] {
+  const locals = new Set(refsByRow.flat().filter(ref => !ref.startsWith('origin/')))
+  return refsByRow.map(refs => {
+    const labels = refs.flatMap(ref => {
+      if (!ref.startsWith('origin/')) return [ref]
+      const name = ref.slice('origin/'.length)
+      if (refs.includes(name)) return []
+      return [locals.has(name) ? ref : name]
+    })
+    return [...new Set(labels)]
+  })
+}
+
+// The prefix holds graph characters alone, so its one `*` or `o` is the commit's mark.
+const drawLanes = (lanes: string, isBase = false) =>
+  lanes.replace(/\*/g, isBase ? '◇' : '●').replace(/o/g, '○').replace(/\|/g, '│').trimEnd()
 
 /** Who `You` is: git's configured email and name; a commit matching either is the person's own. */
 export type Me = { email: string; name: string }
@@ -54,7 +70,8 @@ export function parseGraph(stdout: string, me: Me, now: number): { rows: GraphRo
   let more = 0
   for (const line of stdout.split('\n')) {
     if (line.trim() === '') continue
-    const [lanes = '', sha = '', subject = '', authorEmail = '', author = '', time = '0', decoration = ''] = line.split(SEP)
+    const [lanes = '', sha = '', subject = '', authorEmail = '', author = '', time = '0', decoration = '', mark = '>', parents = ''] =
+      line.split(SEP)
     const isCommit = line.includes(SEP)
     if (isCommit && commits === MAX_COMMITS) more++
     if (commits === MAX_COMMITS) continue
@@ -64,9 +81,11 @@ export function parseGraph(stdout: string, me: Me, now: number): { rows: GraphRo
     }
     commits++
     const isMine = isMe(me, authorEmail, author)
+    // `%m` is `<` for the base's side of `base...head`, `>` for the branch's and `-` for a boundary.
+    const isBase = mark === '<'
     rows.push({
       kind: 'commit',
-      lanes: drawLanes(lanes),
+      lanes: drawLanes(lanes, isBase),
       sha,
       subject,
       author: isMine ? 'You' : (author.split(' ')[0] ?? author),
@@ -74,10 +93,15 @@ export function parseGraph(stdout: string, me: Me, now: number): { rows: GraphRo
       age: shortAge(Number(time), now),
       refs: branchRefs(decoration),
       isBoundary: lanes.includes('o'),
+      isBase,
+      parents: parents.split(' ').filter(p => p !== ''),
+      brings: 0,
     })
   }
   // A cut graph ends on the lane edges below its last commit, which lead nowhere.
   while (rows.at(-1)?.kind === 'edge') rows.pop()
+  const commitRows = rows.filter(r => r.kind === 'commit')
+  labelRefs(commitRows.map(r => r.refs)).forEach((refs, i) => (commitRows[i]!.refs = refs))
   return { rows, more }
 }
 
@@ -180,16 +204,37 @@ async function defaultBranch(git: Run): Promise<string> {
   return head.exitCode === 0 ? head.stdout.trim().replace(/^origin\//, '') : 'main'
 }
 
-/** Reads the branch, its PR, graph, conflicts and checks into a card; null outside a git repository. */
-export async function gather(git: Run, gh: Run, kind: Kind, now: number): Promise<Card | null> {
-  const branch = await git(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
-  if (branch.exitCode !== 0) return null
-  const head = branch.stdout.trim()
+/** For each merge on the branch, how many commits it brings in that the base lacks. */
+async function countBrought(git: Run, rows: GraphRow[], baseRef: string): Promise<GraphRow[]> {
+  return Promise.all(
+    rows.map(async row => {
+      if (row.kind !== 'commit' || row.isBase || row.isBoundary || row.parents.length < 2) return row
+      const [first, ...merged] = row.parents
+      const count = await git(['git', 'rev-list', '--count', ...merged, `^${first}`, `^${baseRef}`])
+      return { ...row, brings: count.exitCode === 0 ? Number(count.stdout.trim()) || 0 : 0 }
+    }),
+  )
+}
+
+/**
+ * Reads a branch, its PR, graph, conflicts and checks into a card; null outside a git repository. The branch is
+ * `branch` when it names a local one, and the checked-out branch otherwise.
+ */
+export async function gather(git: Run, gh: Run, kind: Kind, now: number, branch: string | null = null): Promise<Card | null> {
+  const current = await git(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
+  if (current.exitCode !== 0) return null
+  const checkedOut = current.stdout.trim()
+  const isOther =
+    branch !== null &&
+    branch !== checkedOut &&
+    (await git(['git', 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).exitCode === 0
+  const head = isOther ? (branch as string) : checkedOut
+  const headRef = isOther ? `refs/heads/${head}` : 'HEAD'
 
   const [email, name, view] = await Promise.all([
     git(['git', 'config', 'user.email']),
     git(['git', 'config', 'user.name']),
-    gh(['gh', 'pr', 'view', '--json', PR_FIELDS]),
+    gh(['gh', 'pr', 'view', ...(isOther ? [head] : []), '--json', PR_FIELDS]),
   ])
   const pr = view.exitCode === 0 ? (JSON.parse(view.stdout) as Pr) : null
   const base = pr?.baseRefName ?? (await defaultBranch(git))
@@ -197,11 +242,14 @@ export async function gather(git: Run, gh: Run, kind: Kind, now: number): Promis
   const baseRef = remote.exitCode === 0 ? `origin/${base}` : base
   const isOpen = pr === null || pr.state === 'OPEN'
 
+  // First parents only: a stack's merges from below show as one row each, with the commits they bring counted.
   const [log, trial] = await Promise.all([
-    git(['git', 'log', '--graph', '--boundary', `--format=${FORMAT}`, '-n', String(MAX_COMMITS * 4), `${baseRef}...HEAD`]),
-    isOpen && head !== base ? git(['git', 'merge-tree', '--write-tree', '--name-only', '--no-messages', 'HEAD', baseRef]) : null,
+    git(['git', 'log', '--graph', '--boundary', '--first-parent', `--format=${FORMAT}`, '-n', String(MAX_COMMITS * 4), `${baseRef}...${headRef}`]),
+    isOpen && head !== base ? git(['git', 'merge-tree', '--write-tree', '--name-only', '--no-messages', headRef, baseRef]) : null,
   ])
-  const { rows, more } = log.exitCode === 0 ? parseGraph(log.stdout, { email: email.stdout.trim(), name: name.stdout.trim() }, now) : { rows: [], more: 0 }
+  const parsed = log.exitCode === 0 ? parseGraph(log.stdout, { email: email.stdout.trim(), name: name.stdout.trim() }, now) : { rows: [], more: 0 }
+  const rows = await countBrought(git, parsed.rows, baseRef)
+  const more = parsed.more
   const files = trial === null ? [] : conflictedFiles(trial)
   const latest = rows.find(row => row.kind === 'commit')
 
