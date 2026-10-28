@@ -3,7 +3,7 @@ import { parse, type Block } from './markdown'
 import { pasteShown, promptParts } from './prompt'
 import { BLOCK_MARGIN, MARGIN, render, type ListNode, type Node, type Row } from './render'
 import { oneSentencePerLine } from './sentences'
-import { fromPalette, over, parseGhosttyConfig, THEMES, type Theme, type ThemeName } from './theme'
+import { fromPalette, over, parseGhosttyConfig, parseRexTheme, rexThemeId, THEMES, type Theme, type ThemeName } from './theme'
 
 // MARK: Reply rows
 
@@ -38,13 +38,39 @@ type Options = { theme: ThemeName; sentencePerLine: boolean }
 
 function readOptions(raw: unknown): Options {
   const options = (raw ?? {}) as Record<string, unknown>
-  const isNamed = options.theme === 'ghostty' || (typeof options.theme === 'string' && options.theme in THEMES)
-  return { theme: isNamed ? (options.theme as ThemeName) : 'ghostty', sentencePerLine: options.sentencePerLine !== false }
+  const isNamed = options.theme === 'terminal' || options.theme === 'ghostty' || (typeof options.theme === 'string' && options.theme in THEMES)
+  return { theme: isNamed ? (options.theme as ThemeName) : 'terminal', sentencePerLine: options.sentencePerLine !== false }
+}
+
+type Engine = Parameters<Hook<'ui.render'>>[0]
+
+// MARK: Rex
+
+// Where the Rex app ships its themes, Beta first; the file sits in the app bundle, not in a documented place.
+const REX_THEMES = ['/Applications/Rex Beta.app', '/Applications/Rex.app'].map(
+  app => `${app}/Contents/Resources/SuperUI_SuperDesignTokens.bundle/Contents/Resources/themes.json`,
+)
+
+// Rex puts REX_SESSION in the environment of every terminal it starts. The app keeps the chosen dark and light
+// theme in its defaults, and themes.json holds each theme's colours.
+async function rexTheme($: Engine): Promise<Theme | undefined> {
+  const session = await $.env.get('REX_SESSION')
+  if (session === undefined || session === '') return undefined
+  const defaults = await $.process.run(['defaults', 'read', 'com.superlogical.rex'], { timeoutMs: 5000 })
+  if (defaults.exitCode !== 0) return undefined
+  // Fails when the system is in light mode, which reads as not dark.
+  const style = await $.process.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'], { timeoutMs: 5000 })
+  const id = rexThemeId(defaults.stdout, style.exitCode === 0 && style.stdout.trim() === 'Dark')
+  if (id === undefined) return undefined
+  for (const path of REX_THEMES) {
+    const { exitCode, stdout } = await $.process.run(['cat', path], { timeoutMs: 5000 })
+    const palette = exitCode === 0 ? parseRexTheme(stdout, id) : undefined
+    if (palette) return fromPalette(palette)
+  }
+  return undefined
 }
 
 // MARK: Ghostty
-
-type Engine = Parameters<Hook<'ui.render'>>[0]
 
 // Ghostty puts its bin directory in the environment of everything it starts, herdr's panes included, and
 // show-config prints the theme's colours already resolved, so no theme file has to be found.
@@ -56,15 +82,18 @@ async function ghosttyTheme($: Engine): Promise<Theme | undefined> {
   return palette && fromPalette(palette)
 }
 
-// Ghostty's colours are read once, on the first draw; outside Ghostty, or when they cannot be read, Embark's stand in.
-let ghostty: Promise<Theme> | undefined
+// The terminal's colours are read once, on the first draw: Rex's, else Ghostty's; when neither can be read, Embark's.
+let terminal: Promise<Theme> | undefined
 function themeFor($: Engine, name: ThemeName): Promise<Theme> {
-  if (name !== 'ghostty') return Promise.resolve(THEMES[name])
-  ghostty ??= ghosttyTheme($).then(
-    theme => theme ?? THEMES.embark,
-    () => THEMES.embark,
-  )
-  return ghostty
+  if (name !== 'terminal' && name !== 'ghostty') return Promise.resolve(THEMES[name])
+  terminal ??= rexTheme($)
+    .catch(() => undefined)
+    .then(theme => theme ?? ghosttyTheme($))
+    .then(
+      theme => theme ?? THEMES.embark,
+      () => THEMES.embark,
+    )
+  return terminal
 }
 
 // MARK: Hooks

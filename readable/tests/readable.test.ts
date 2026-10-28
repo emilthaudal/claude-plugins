@@ -1,7 +1,7 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 import { highlight } from '../hooks/highlight'
 import { parse } from '../hooks/markdown'
-import { contrast, fromPalette, parseGhosttyConfig } from '../hooks/theme'
+import { contrast, fromPalette, parseGhosttyConfig, parseRexTheme, rexThemeId } from '../hooks/theme'
 
 // MARK: Harness
 
@@ -601,4 +601,74 @@ test('leaves Ghostty alone when a fixed theme is chosen', { options: { theme: 'e
   const runs = inGhostty(on)
   expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe('#cbe3e7')
   expect(runs).toEqual([])
+})
+
+// MARK: Rex
+
+// What `defaults read com.superlogical.rex` prints, trimmed to the theme keys and one it skips.
+const REX_DEFAULTS = [
+  '{',
+  '    "Workspace.appearance" = dark;',
+  '    "Workspace.darkThemeID" = "velvet-dusk";',
+  '    "Workspace.interfaceStyle" = blendTheme;',
+  '    "Workspace.lightThemeID" = "lavender-postcard";',
+  '}',
+].join('\n')
+
+// Velvet Dusk as Rex's themes.json holds it, beside a light theme readable must not pick.
+const VELVET_DUSK = {
+  background: '#171122',
+  foreground: '#d6cbe6',
+  ansi: ['#241a35', '#e07396', '#83bb8d', '#dcae76', '#7f95dc', '#b98ae0', '#7fb8c4', '#b5aacb'].concat(
+    ['#635677', '#ef92ae', '#9ed3a7', '#edc793', '#9cafe9', '#cfa8f0', '#9cd0da', '#ede6f7'],
+  ),
+}
+const REX_THEMES = JSON.stringify([
+  { id: 'lavender-postcard', appearance: 'light', source: { ...VELVET_DUSK, background: '#f6f1fb', foreground: '#3a2f4d' } },
+  { id: 'velvet-dusk', appearance: 'dark', source: { ...VELVET_DUSK, cursor: '#c9a1f0' } },
+])
+
+function inRex(on: Parameters<TestBody>[1], { defaults = REX_DEFAULTS, systemDark = true } = {}) {
+  mock.env(on, { REX_SESSION: 'session:01a1' })
+  const runs: string[][] = []
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    runs.push(argv)
+    const out = (exitCode: number, stdout: string) => ({ value: { exitCode, stdout, stderr: '' } }) as never
+    if (argv[0] === 'defaults' && argv[2] === '-g') return systemDark ? out(0, 'Dark\n') : out(1, '')
+    if (argv[0] === 'defaults') return out(0, defaults)
+    if (argv[0] === 'cat' && argv[1]?.startsWith('/Applications/Rex Beta.app/')) return out(0, REX_THEMES)
+    return out(1, '')
+  })
+  return runs
+}
+
+test('picks the dark or light Rex theme by the app’s appearance, else the system’s', () => {
+  expect(rexThemeId(REX_DEFAULTS, false)).toBe('velvet-dusk')
+  expect(rexThemeId(REX_DEFAULTS.replace('= dark;', '= light;'), true)).toBe('lavender-postcard')
+  expect(rexThemeId(REX_DEFAULTS.replace('= dark;', '= system;'), false)).toBe('lavender-postcard')
+  expect(rexThemeId(REX_DEFAULTS.replace('= dark;', '= system;'), true)).toBe('velvet-dusk')
+  expect(rexThemeId('{\n}', true)).toBeUndefined()
+})
+
+test('reads one theme’s colours out of Rex’s themes.json', () => {
+  expect(parseRexTheme(REX_THEMES, 'velvet-dusk')).toEqual(VELVET_DUSK)
+  expect(parseRexTheme(REX_THEMES, 'no-such-theme')).toBeUndefined()
+  expect(parseRexTheme(JSON.stringify([{ id: 'short', source: { ...VELVET_DUSK, ansi: ['#000000'] } }]), 'short')).toBeUndefined()
+})
+
+test('draws in the colours of Rex’s theme inside Rex', async ($, on) => {
+  inRex(on)
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe(fromPalette(VELVET_DUSK).text.color)
+  expect(find(await prompt($), 'make it blue')?.props.backgroundColor).toBe(fromPalette(VELVET_DUSK).prompt.backgroundColor)
+})
+
+test('falls back to Embark when Rex’s theme cannot be read', async ($, on) => {
+  inRex(on, { defaults: '{\n}' })
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe('#cbe3e7')
+})
+
+test('still reads Rex’s theme under the old ghostty name', { options: { theme: 'ghostty' } }, async ($, on) => {
+  inRex(on)
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe(fromPalette(VELVET_DUSK).text.color)
 })

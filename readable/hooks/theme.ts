@@ -240,6 +240,27 @@ export function parseGhosttyConfig(text: string): Palette | undefined {
   return { background, foreground, ansi: colors as string[] }
 }
 
+// MARK: Rex
+
+/** Which Rex theme is showing, from `defaults read com.superlogical.rex`: the dark or light one, by the app's appearance. */
+export function rexThemeId(defaults: string, isSystemDark: boolean): string | undefined {
+  const read = (key: string) => new RegExp(`"Workspace\\.${key}" = "?([^";]+)"?;`).exec(defaults)?.[1]
+  const appearance = read('appearance')
+  const isDark = appearance === 'dark' || (appearance !== 'light' && isSystemDark)
+  return read(isDark ? 'darkThemeID' : 'lightThemeID')
+}
+
+/** One theme's colours out of the themes.json Rex ships; undefined when it is missing or incomplete. */
+export function parseRexTheme(json: string, id: string): Palette | undefined {
+  const themes = JSON.parse(json) as { id?: string; source?: { background?: string; foreground?: string; ansi?: string[] } }[]
+  const source = Array.isArray(themes) ? themes.find(theme => theme.id === id)?.source : undefined
+  const background = source?.background && hex(source.background)
+  const foreground = source?.foreground && hex(source.foreground)
+  const ansi = (source?.ansi ?? []).slice(0, 16).map(hex)
+  if (!background || !foreground || ansi.length < 16 || ansi.some(c => c === undefined)) return undefined
+  return { background, foreground, ansi: ansi as string[] }
+}
+
 const rgb = (color: string) => [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16))
 const toHex = (c: number[]) => `#${c.map(v => Math.round(v).toString(16).padStart(2, '0')).join('')}`
 /** `a` moved a fraction `t` of the way towards `b`. */
@@ -341,7 +362,8 @@ export function fromPalette({ background: bg, foreground: fg, ansi }: Palette): 
 
 // MARK: Choice
 
-/** The fixed themes the `theme` option picks between; plugin.json lists them after `ghostty`. */
+/** The fixed themes the `theme` option picks between; plugin.json lists them after `terminal`. */
 export const THEMES = { embark: EMBARK, dark: DARK } satisfies Record<string, Theme>
 
-export type ThemeName = keyof typeof THEMES | 'ghostty'
+/** `terminal` takes the colours of Rex's or Ghostty's theme; `ghostty` is its old name. */
+export type ThemeName = keyof typeof THEMES | 'terminal' | 'ghostty'
