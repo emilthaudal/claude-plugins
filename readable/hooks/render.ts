@@ -7,15 +7,16 @@ import { over, type Look, type Theme } from './theme'
 /** A stretch of text in one look. */
 export type Span = { text: string; look: Look }
 
-/** One terminal row, already fitted to the width it was laid out at. */
+/** One terminal row, already fitted to the width it was laid out at; or one line of prose, which the engine wraps. */
 export type Row = Span[]
 
 // The shape of a reply: what the theme does not pick.
-const MARGIN = 2
+export const MARGIN = 2
 const CODE = { margin: 2, padX: 2, padY: 1 }
 const QUOTE = { bar: '▎', padX: 1 }
 const NESTED_LIST_INDENT = 2
-const BULLET = '• '
+// A dash, not a dot: a mouse selection copies the glyph drawn, and `- ` is what pastes as a list.
+const BULLET = '- '
 const TASK = { done: '[✓] ', open: '[ ] ' }
 const RULE = '--------'
 const TABLE = { column: '│', line: '─', cross: '┼', minColumn: 3 }
@@ -227,9 +228,6 @@ function inlineSpans(nodes: Inline[], look: Look, theme: Theme): Span[] {
 
 type Frame = { theme: Theme; width: number; look: Look; nested: boolean }
 
-/** Where a code block's panel starts: the reply's margin and the block's own. */
-export const BLOCK_MARGIN = MARGIN + CODE.margin
-
 function stack(blocks: Block[], frame: Frame): Row[] {
   return blocks.flatMap((block, i) => (i === 0 ? blockRows(block, frame) : [blank(), ...blockRows(block, frame)]))
 }
@@ -257,12 +255,17 @@ function blockRows(block: Block, frame: Frame): Row[] {
   }
 }
 
-function heading(block: Extract<Block, { type: 'heading' }>, { theme, width, look }: Frame): Row[] {
+// h1 is a banner padded by a space either side; lower levels keep their hashes.
+function headingSpans(block: Extract<Block, { type: 'heading' }>, { theme, look }: Frame): { spans: Span[]; close: Span } {
   const paint = over(over(look, theme.heading), theme.headings[block.depth as 1])
-  // h1 is a banner padded by a space either side; lower levels keep their hashes.
   const [open, close] = block.depth === 1 ? [' ', ' '] : [`${'#'.repeat(block.depth)} `, '']
-  const rows = flow([{ text: open, look: paint }, ...inlineSpans(block.children, paint, theme)], width)
-  push(rows.at(-1) as Row, close, paint)
+  return { spans: [{ text: open, look: paint }, ...inlineSpans(block.children, paint, theme)], close: { text: close, look: paint } }
+}
+
+function heading(block: Extract<Block, { type: 'heading' }>, frame: Frame): Row[] {
+  const { spans, close } = headingSpans(block, frame)
+  const rows = flow(spans, frame.width)
+  push(rows.at(-1) as Row, close.text, close.look)
   return rows
 }
 
@@ -366,8 +369,24 @@ function table(block: Extract<Block, { type: 'table' }>, { theme, width, look }:
 
 // MARK: Reply
 
-/** A run of a reply's rows, and the raw text a copy button under them takes when they end in a code block or quote. */
-export type Part = { rows: Row[]; copy?: string }
+/**
+ * What a reply draws, top to bottom. Prose is left to the engine to wrap: a row it wraps is one line to a mouse
+ * selection, so a copy takes a paragraph back whole, without the breaks or the indent of the rows it wrapped onto.
+ *
+ * - `text`: one Text, its lines joined by newlines: prose lines, and the rows of panels and tables laid out here.
+ * - `list`: a list's items, each one's marker in a column of its own so its wrapped text hangs under its first word.
+ * - `copy`: the button under a code block or quote, with the text it copies.
+ */
+export type Node = { kind: 'text'; lines: Row[] } | ListNode | { kind: 'copy'; text: string }
+
+/** A list `indent` cells in from its edge, a blank row above it when `space`. */
+export type ListNode = { kind: 'list'; indent: number; space: boolean; items: ListItem[] }
+
+/** An item, a blank row above it when `space`: its text beside the marker, and lists nested in it. */
+export type ListItem = { space: boolean; parts: (Hung | ListNode)[] }
+
+/** Lines set `hang` cells in, the item's marker in those cells when they are its first. */
+export type Hung = { kind: 'hung'; marker?: Span; hang: number; lines: Row[] }
 
 // What a copy of a block puts on the clipboard: its text without the panel, bar or `>` markers around it.
 function rawOf(block: Block): string | undefined {
@@ -376,21 +395,86 @@ function rawOf(block: Block): string | undefined {
   return undefined
 }
 
-/**
- * Lays a parsed reply out at `columns` cells wide, inside the document margin on each side, cut after each top-level
- * code block and quote so a copy button can sit under it.
- */
-export function render(blocks: Block[], theme: Theme, columns: number): Part[] {
-  const frame = { theme, width: Math.max(columns - MARGIN * 2, 1), look: theme.text, nested: false }
-  const parts: Part[] = [{ rows: [] }]
-  for (const [i, block] of blocks.entries()) {
-    const part = parts.at(-1) as Part
-    if (i > 0) part.rows.push(blank())
-    part.rows.push(...blockRows(block, frame))
-    const copy = rawOf(block)
-    if (copy === undefined) continue
-    part.copy = copy
-    parts.push({ rows: [] })
+// A paragraph's lines, cut only where it breaks itself (a sentence, a hard break).
+function linesOf(spans: Span[]): Row[] {
+  const lines: Row[] = [[]]
+  for (const span of spans) {
+    for (const [i, piece] of span.text.split('\n').entries()) {
+      if (i > 0) lines.push([])
+      push(lines.at(-1) as Row, piece, span.look)
+    }
   }
-  return parts.filter(part => part.rows.length > 0).map(part => ({ ...part, rows: prefixed(part.rows, pad(MARGIN, {})) }))
+  return lines
+}
+
+// Paragraphs and headings are lines for the engine to wrap; panels, tables and rules are rows laid out here.
+function blockLines(block: Block, frame: Frame): Row[] {
+  if (block.type === 'paragraph') return linesOf(inlineSpans(block.children, frame.look, frame.theme))
+  if (block.type === 'heading') {
+    const { spans, close } = headingSpans(block, frame)
+    return linesOf([...spans, close])
+  }
+  return blockRows(block, frame)
+}
+
+// Lines that follow other lines join their Text, a blank line between, so a run of blocks is one node.
+function appendLines(last: Node | Hung | undefined, lines: Row[], space: boolean, open: () => { lines: Row[] }): void {
+  const target = last !== undefined && 'lines' in last ? last : open()
+  if (space) target.lines.push(blank())
+  target.lines.push(...lines)
+}
+
+function itemParts(item: Item, marker: Span, frame: Frame): (Hung | ListNode)[] {
+  const hang = widthOf(marker.text)
+  const body = { ...frame, width: Math.max(frame.width - hang, 1) }
+  const parts: (Hung | ListNode)[] = []
+  for (const [i, child] of item.children.entries()) {
+    // A nested list keeps its own indent from the list's edge, not from the item's text.
+    if (child.type === 'list' && i > 0) {
+      parts.push(listNode(child, frame, false))
+      continue
+    }
+    const space = i > 0 && (standsApart(child) || standsApart(item.children[i - 1]))
+    appendLines(parts.at(-1), blockLines(child, body), space, () => {
+      const hung: Hung = { kind: 'hung', hang, lines: [], ...(parts.length === 0 && { marker }) }
+      parts.push(hung)
+      return hung
+    })
+  }
+  return parts.length === 0 ? [{ kind: 'hung', marker, hang, lines: [] }] : parts
+}
+
+function listNode(block: Extract<Block, { type: 'list' }>, frame: Frame, space: boolean): ListNode {
+  const indent = frame.nested ? NESTED_LIST_INDENT : 0
+  const inner = { ...frame, nested: true, width: Math.max(frame.width - indent, 1) }
+  const items = block.items.map((item, i) => ({
+    space: i > 0 && standsApart(block.items[i - 1]?.children.at(-1)),
+    parts: itemParts(item, markerOf(block, item, i, inner), inner),
+  }))
+  return { kind: 'list', indent, space, items }
+}
+
+/** Where a code block's panel starts inside the reply's margin, which a copy button under it lines up with. */
+export const BLOCK_MARGIN = CODE.margin
+
+/**
+ * Lays a parsed reply out for `columns` cells, the reply's margin on each side included: blank lines between blocks,
+ * and a copy button after each top-level code block and quote.
+ */
+export function render(blocks: Block[], theme: Theme, columns: number): Node[] {
+  const frame = { theme, width: Math.max(columns - MARGIN * 2, 1), look: theme.text, nested: false }
+  const nodes: Node[] = []
+  for (const [i, block] of blocks.entries()) {
+    if (block.type === 'list') nodes.push(listNode(block, frame, i > 0))
+    else {
+      appendLines(nodes.at(-1), blockLines(block, frame), i > 0, () => {
+        const text: Extract<Node, { kind: 'text' }> = { kind: 'text', lines: [] }
+        nodes.push(text)
+        return text
+      })
+    }
+    const copy = rawOf(block)
+    if (copy !== undefined) nodes.push({ kind: 'copy', text: copy })
+  }
+  return nodes
 }

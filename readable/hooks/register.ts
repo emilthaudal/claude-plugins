@@ -1,7 +1,7 @@
 import type { Hook, Register } from 'claude-code'
 import { parse, type Block } from './markdown'
 import { pasteShown, promptParts } from './prompt'
-import { BLOCK_MARGIN, render, type Part } from './render'
+import { BLOCK_MARGIN, MARGIN, render, type ListNode, type Node, type Row } from './render'
 import { oneSentencePerLine } from './sentences'
 import { fromPalette, over, parseGhosttyConfig, THEMES, type Theme, type ThemeName } from './theme'
 
@@ -15,31 +15,21 @@ const REPLY_MARK = '●'
 const PROMPT_MARK = '❯'
 const PASTE_BAR = '▎'
 
-/** Laid-out rows of recent replies: a reply redraws on every scroll and resize, but its text and width rarely change. */
-class RecentRows {
-  private readonly rows = new Map<string, Part[]>()
+/** Laid-out recent replies: a reply redraws on every scroll and resize, but its text and width rarely change. */
+class RecentLayouts {
+  private readonly layouts = new Map<string, Node[]>()
 
   constructor(private readonly capacity: number) {}
 
-  get(key: string, lay: () => Part[]): Part[] {
-    const hit = this.rows.get(key)
+  get(key: string, lay: () => Node[]): Node[] {
+    const hit = this.layouts.get(key)
     // Insertion order is recency: a hit moves to the back, and the front is the first to go.
-    this.rows.delete(key)
-    const rows = hit ?? lay()
-    this.rows.set(key, rows)
-    if (this.rows.size > this.capacity) this.rows.delete(this.rows.keys().next().value as string)
-    return rows
+    this.layouts.delete(key)
+    const layout = hit ?? lay()
+    this.layouts.set(key, layout)
+    if (this.layouts.size > this.capacity) this.layouts.delete(this.layouts.keys().next().value as string)
+    return layout
   }
-}
-
-// The first message of a reply carries the engine's `●`, in the margin left of the text.
-function marked(parts: Part[], theme: Theme): Part[] {
-  const [head, ...tail] = parts
-  const [first, ...rest] = head?.rows ?? []
-  const margin = first?.[0]
-  if (head === undefined || first === undefined || margin === undefined || !margin.text.startsWith(' ')) return parts
-  const row = [{ text: REPLY_MARK, look: theme.text }, { ...margin, text: margin.text.slice(1) }, ...first.slice(1)]
-  return [{ ...head, rows: [row, ...rest] }, ...tail]
 }
 
 // MARK: Options
@@ -82,7 +72,7 @@ function themeFor($: Engine, name: ThemeName): Promise<Theme> {
 export const register: Register = (on, raw) => {
   const options = readOptions(raw)
   const reshape = (blocks: Block[]) => (options.sentencePerLine ? oneSentencePerLine(blocks) : blocks)
-  const recent = new RecentRows(200)
+  const recent = new RecentLayouts(200)
 
   // A hook that throws hands the row to the engine, so a parser bug never blanks a message.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
@@ -90,28 +80,48 @@ export const register: Register = (on, raw) => {
     if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
     const theme = await themeFor($, options.theme)
     const columns = (e.viewport?.columns ?? UNMEASURED_COLUMNS) - EDGE
-    const first = e.props.isFirstOfReply === true
-    const parts = recent.get(`${columns}:${first}:${e.props.text}`, () => {
+    const nodes = recent.get(`${columns}:${e.props.text}`, () => {
       const blocks = reshape(parse(e.props.text))
-      if (blocks.length === 0) return []
-      const laid = render(blocks, theme, columns)
-      return first ? marked(laid, theme) : laid
+      return blocks.length === 0 ? [] : render(blocks, theme, columns)
     })
-    if (parts.length === 0) return next(e)
+    if (nodes.length === 0) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    // Each part is one Text, its rows joined by newlines: nested Texts are not layout nodes, so the engine lays out one
-    // node per part instead of one per row, which a resumed session pays for every message at once.
+    // A run of lines is one Text, its lines joined by newlines: nested Texts are not layout nodes, so a run of
+    // paragraphs, headings and panels is one node however long, which a resumed session pays for every message at once.
+    // A list item costs a few more (its row, its marker's column and its text), bounded by the items: its text has to
+    // be a node of its own for the engine to wrap it under the item's first word.
     // Links are text with the URL after them, not Link elements: a terminal without OSC 8 (tmux) prints a Link's URL
     // again after it, unmeasured, which overflows the row.
-    const drawn = parts.flatMap((part, p) => {
-      const children = part.rows.flatMap((row, i) => [...(i > 0 ? ['\n'] : []), ...row.map(span => Text({ ...span.look, children: [span.text] }))])
-      const text = Text({ children })
-      if (part.copy === undefined) return [text]
-      const raw = part.copy
+    const text = (lines: Row[]) =>
+      Text({ children: lines.flatMap((line, i) => [...(i > 0 ? ['\n'] : []), ...line.map(span => Text({ ...span.look, children: [span.text] }))]) })
+    const spaced = (space: boolean) => (space ? { marginTop: 1 } : {})
+    const list = (node: ListNode): ReturnType<typeof Box> =>
+      Box({
+        flexDirection: 'column',
+        paddingLeft: node.indent,
+        ...spaced(node.space),
+        children: node.items.map(item => {
+          const parts = item.parts.map((part, i) => {
+            if (part.kind === 'list') return list(part)
+            const body = part.lines.length > 0 ? [text(part.lines)] : []
+            const space = spaced(item.space && i === 0 && item.parts.length === 1)
+            if (part.marker === undefined) return Box({ paddingLeft: part.hang, ...space, children: body })
+            // The marker has a column of its own, so the rows the engine wraps the text onto start under its first word.
+            const marker = Box({ width: part.hang, flexShrink: 0, children: [Text({ ...part.marker.look, children: [part.marker.text] })] })
+            return Box({ ...space, children: [marker, ...body] })
+          })
+          return parts.length === 1 ? (parts[0] as ReturnType<typeof Box>) : Box({ flexDirection: 'column', ...spaced(item.space), children: parts })
+        }),
+      })
+    let copies = 0
+    const drawn = nodes.map(node => {
+      if (node.kind === 'text') return text(node.lines)
+      if (node.kind === 'list') return list(node)
+      const raw = node.text
       // Selecting a panel with the mouse takes its padding and bar along; the button copies the block's text alone.
       const copy = Button({
-        key: `copy-${p}`,
+        key: `copy-${copies++}`,
         label: 'copy',
         plain: true,
         dimColor: true,
@@ -120,10 +130,16 @@ export const register: Register = (on, raw) => {
           $.ui.toast(isCopied ? 'Copied' : 'Could not copy')
         },
       })
-      return [text, Box({ paddingLeft: BLOCK_MARGIN, children: [copy] })]
+      return Box({ paddingLeft: BLOCK_MARGIN, children: [copy] })
     })
-    // A blank row above and below sets the reply apart from the rows around it.
-    return Box({ flexDirection: 'column', marginTop: 1, marginBottom: 1, children: drawn })
+    // A blank row above and below sets the reply apart from the rows around it. The margins are layout, not spaces in
+    // the text, so the rows the engine wraps a line onto start at the text and a selection leaves them out.
+    const margins = { marginTop: 1, marginBottom: 1 }
+    const column = { flexDirection: 'column' as const, paddingRight: MARGIN, children: drawn }
+    if (e.props.isFirstOfReply !== true) return Box({ ...margins, ...column, paddingLeft: MARGIN })
+    // The first message of a reply carries the engine's `●`, in the margin left of the text.
+    const mark = Box({ width: MARGIN, flexShrink: 0, children: [Text({ ...theme.text, children: [REPLY_MARK] })] })
+    return Box({ ...margins, children: [mark, Box({ ...column, flexGrow: 1, flexShrink: 1 })] })
   }).catch(($, e, next) => next(e))
 
   // The person's own prompts sit on a panel; notifications and other agents' messages keep the engine's drawing.

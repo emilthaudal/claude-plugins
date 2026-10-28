@@ -27,11 +27,16 @@ function leaves(node: unknown, out: Leaf[] = []): Leaf[] {
 
 const textOf = (node: unknown) => leaves(node).map(leaf => leaf.text).join('')
 const find = (node: unknown, text: string) => leaves(node).find(leaf => leaf.text.includes(text))
-// A reply is Texts whose rows are separated by newline strings, a copy button between them after a code block or quote;
-// each row comes back as a Box of its spans.
+// The Texts the layout places (not the spans inside them), in drawing order.
+function texts(node: unknown, out: Element[] = []): Element[] {
+  const element = node as Element | null
+  if (element?.type === 'Text') out.push(element)
+  else for (const kid of element?.children ?? []) texts(kid, out)
+  return out
+}
+// The lines of each Text, split at its newline strings; each line comes back as a Box of its spans.
 function rowsOf(root: Element): Element[] {
-  const texts = (root.children ?? []).filter((kid): kid is Element => (kid as Element).type === 'Text')
-  return texts.flatMap(text => {
+  return texts(root).flatMap(text => {
     const rows: Element[] = [{ type: 'Box', children: [] }]
     for (const kid of text.children ?? []) {
       if (kid === '\n') rows.push({ type: 'Box', children: [] })
@@ -40,6 +45,105 @@ function rowsOf(root: Element): Element[] {
     return rows
   })
 }
+
+// MARK: Screen
+
+// A stand-in for the engine's layout and mouse selection, enough for a reply's shape: Boxes in a row or a column,
+// padding, margins and fixed widths, and Texts wrapped at spaces. A row the engine wraps a line onto records the
+// column its text starts at; the selection starts that row there and joins it to the row above, with the space the
+// wrap took. Every other row is copied from the left edge, the margin's blank cells as spaces, trailing space trimmed.
+type Wrap = { at: number; space: boolean }
+type Screen = { rows: string[]; wraps: (Wrap | undefined)[] }
+
+const blankRows = (count: number): Screen => ({ rows: Array<string>(count).fill(''), wraps: Array<undefined>(count).fill(undefined) })
+
+function wrapLine(line: string, width: number, screen: Screen): void {
+  let row = ''
+  let wrap: Wrap | undefined
+  const close = (next: Wrap) => {
+    screen.rows.push(row)
+    screen.wraps.push(wrap)
+    row = ''
+    wrap = next
+  }
+  // Words at even places, the spaces between them at odd ones.
+  const pieces = line.split(/( +)/)
+  for (const [i, piece] of pieces.entries()) {
+    if (piece === '' || i % 2 === 1) continue
+    const gap = pieces[i - 1] ?? ''
+    if (row !== '' && row.length + gap.length + piece.length > width) close({ at: 0, space: true })
+    else if (row !== '' || wrap === undefined) row += gap
+    for (const ch of piece) {
+      if (row.length >= width) close({ at: 0, space: false })
+      row += ch
+    }
+  }
+  close({ at: 0, space: true })
+}
+
+function shifted(screen: Screen, x: number, width: number): Screen {
+  return { rows: screen.rows.map(row => ' '.repeat(x) + row.padEnd(width - x)), wraps: screen.wraps.map(w => w && { ...w, at: w.at + x }) }
+}
+
+function paint(node: unknown, width: number): Screen {
+  const element = node as Element
+  const props = element.props ?? {}
+  if (element.type === 'Text' || element.type === 'Button') {
+    const screen: Screen = { rows: [], wraps: [] }
+    const text = element.type === 'Button' ? String(props.label) : (element.children ?? []).map(kid => (typeof kid === 'string' ? kid : textOf(kid))).join('')
+    for (const line of text.split('\n')) wrapLine(line, width, screen)
+    return screen
+  }
+  const num = (key: string) => (typeof props[key] === 'number' ? (props[key] as number) : 0)
+  const left = num('paddingLeft') + num('paddingX')
+  const inner = Math.max((typeof props.width === 'number' ? props.width : width) - left - num('paddingRight') - num('paddingX'), 1)
+  const kids = (element.children ?? []).filter((kid): kid is Element => typeof kid === 'object')
+  let body: Screen
+  if (props.flexDirection === 'column') {
+    body = { rows: [], wraps: [] }
+    for (const kid of kids) {
+      const painted = paint(kid, inner)
+      body.rows.push(...painted.rows)
+      body.wraps.push(...painted.wraps)
+    }
+  } else {
+    // A row: children with a width keep it, the rest share what is left.
+    const fixed = kids.reduce((sum, kid) => sum + (typeof kid.props?.width === 'number' ? (kid.props.width as number) : 0), 0)
+    const flexible = kids.filter(kid => typeof kid.props?.width !== 'number').length
+    let x = 0
+    body = blankRows(0)
+    for (const kid of kids) {
+      const w = typeof kid.props?.width === 'number' ? (kid.props.width as number) : Math.max(Math.floor((inner - fixed) / Math.max(flexible, 1)), 1)
+      const painted = paint(kid, w)
+      for (let r = 0; r < painted.rows.length; r++) {
+        body.rows[r] = (body.rows[r] ?? '').padEnd(x) + (painted.rows[r] ?? '')
+        const wrap = painted.wraps[r]
+        body.wraps[r] = wrap ? { ...wrap, at: wrap.at + x } : body.wraps[r]
+      }
+      x += w
+    }
+    body.wraps = Array.from({ length: body.rows.length }, (_, r) => body.wraps[r])
+  }
+  const top = blankRows(num('marginTop'))
+  const bottom = blankRows(num('marginBottom'))
+  const placed = shifted(body, left, width)
+  return { rows: [...top.rows, ...placed.rows, ...bottom.rows], wraps: [...top.wraps, ...placed.wraps, ...bottom.wraps] }
+}
+
+/** What dragging the mouse over the whole reply copies, as the engine's selection reads the screen. */
+function selected(screen: Screen): string {
+  const lines: string[] = []
+  screen.rows.forEach((row, r) => {
+    const wrap = screen.wraps[r]
+    const text = (wrap ? row.slice(wrap.at) : row).trimEnd()
+    if (wrap && lines.length > 0) lines[lines.length - 1] += (wrap.space ? ' ' : '') + text
+    else lines.push(text)
+  })
+  return lines.join('\n')
+}
+
+// The reply's rows, without the blank row it keeps above and below; the engine keeps a column clear at each edge.
+const screenOf = (root: Element, columns = COLUMNS) => paint({ ...root, props: { ...root.props, marginTop: 0, marginBottom: 0 } }, columns - 2)
 
 async function reply($: Engine, text: unknown, props: Record<string, unknown> = {}, columns = COLUMNS): Promise<Element> {
   const ui = await $.ui.mount({
@@ -54,7 +158,12 @@ async function reply($: Engine, text: unknown, props: Record<string, unknown> = 
 
 /** A reply's rows as the terminal shows them, trailing space trimmed. */
 async function lines($: Engine, text: string, props: Record<string, unknown> = {}): Promise<string[]> {
-  return rowsOf(await reply($, text, props)).map(row => textOf(row).trimEnd())
+  return screenOf(await reply($, text, props)).rows.map(row => row.trimEnd())
+}
+
+/** What selecting the whole reply with the mouse copies. */
+async function selectedText($: Engine, text: string, props: Record<string, unknown> = {}, columns = COLUMNS): Promise<string> {
+  return selected(screenOf(await reply($, text, props, columns), columns))
 }
 
 async function prompt($: Engine, text = 'make it blue', kind = 'composer', isExpanded = true): Promise<Element> {
@@ -98,11 +207,19 @@ test('wraps prose inside both margins and wraps again at a narrower width', asyn
     expect(row.startsWith('  ')).toBe(true)
     expect(row.length).toBeLessThanOrEqual(2 + TEXT_WIDTH)
   }
-  expect(rowsOf(await reply($, words, {}, 40)).length).toBeGreaterThan(wide.length)
+  expect(screenOf(await reply($, words, {}, 40), 40).rows.length).toBeGreaterThan(wide.length)
 })
 
-test('puts one blank row between blocks', async $ => {
+test('leaves prose for the engine to wrap, so a selection copies a paragraph back as one line', async $ => {
+  const words = Array.from({ length: 40 }, (_, i) => `w${i}x`).join(' ')
+  // One line in the Text however narrow the terminal: the engine wraps it, and knows the rows it wrapped onto.
+  expect(rowsOf(await reply($, words, {}, 40)).map(textOf)).toEqual([words])
+  expect(await selectedText($, `${words}\n\nNext.`, {}, 40)).toBe(`  ${words}\n\n  Next.`)
+})
+
+test('puts one blank row between blocks, a run of them in one Text', async $ => {
   expect(await lines($, 'One.\n\nTwo.')).toEqual(['  One.', '', '  Two.'])
+  expect(texts(await reply($, '# A\n\nOne.\n\n```\nx\n```'))).toHaveLength(1)
 })
 
 // MARK: Headings and inlines
@@ -157,9 +274,9 @@ test('draws an image as a caption and its URL', async $ => {
 
 test('marks bullets, numbers and tasks, and indents a nested list', async $ => {
   expect(await lines($, '- one\n  - inner\n- two\n\n3. third\n4. fourth\n\n- [x] done\n- [ ] todo')).toEqual([
-    '  • one',
-    '    • inner',
-    '  • two',
+    '  - one',
+    '    - inner',
+    '  - two',
     '',
     '  3. third',
     '  4. fourth',
@@ -171,37 +288,54 @@ test('marks bullets, numbers and tasks, and indents a nested list', async $ => {
 
 test('hangs a wrapped item’s text under its first word', async $ => {
   const rows = await lines($, `- ${'word '.repeat(30)}`)
-  expect(rows[0]?.startsWith('  • word')).toBe(true)
+  expect(rows[0]?.startsWith('  - word')).toBe(true)
   expect(rows[1]?.startsWith('    word')).toBe(true)
+})
+
+test('copies a list as Markdown: dashes, two spaces a level, each item one line', async $ => {
+  const long = Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ')
+  expect(await selectedText($, `- ${long}\n  - inner ${long}\n- two\n\n1. first`)).toBe(
+    [`  - ${long}`, `    - inner ${long}`, '  - two', '', '  1. first'].join('\n'),
+  )
+})
+
+test('gives a list item’s marker a column of its own, beside one Text the engine wraps', async $ => {
+  const root = await reply($, '- one. Two')
+  const marker = find(root, '- ')
+  expect(marker?.props.color).toBe('#a37acc')
+  // The marker's Box keeps its width however long the item, so the wrapped rows start under the text.
+  expect(JSON.stringify(root)).toContain('"width":2,"flexShrink":0')
+  const content = (text: Element) => (text.children ?? []).map(kid => (typeof kid === 'string' ? kid : textOf(kid))).join('')
+  expect(texts(root).map(content)).toEqual(['- ', 'one.\nTwo'])
 })
 
 test('sets a table inside a list item a blank row apart from the text and the next item', async $ => {
   expect(await lines($, '- Since:\n\n  | A | B |\n  | - | - |\n  | 1 | 2 |\n- Next')).toEqual([
-    '  • Since:',
+    '  - Since:',
     '',
     '     A │ B',
     '    ───┼───',
     '     1 │ 2',
     '',
-    '  • Next',
+    '  - Next',
   ])
 })
 
 // MARK: Quotes, rules and tables
 
 test('bars a quote and joins its lines', async $ => {
-  expect(await lines($, '> quoted\n> words')).toEqual(['  ▎ quoted words'])
+  expect(await lines($, '> quoted\n> words')).toEqual(['  ▎ quoted words', '    copy'])
 })
 
 test('fills a quote panel to the text width, its blank rows too', async $ => {
   const root = await reply($, '> one\n>\n> two')
-  expect(rowsOf(root).map(row => textOf(row).length)).toEqual([2 + TEXT_WIDTH, 2 + TEXT_WIDTH, 2 + TEXT_WIDTH])
+  expect(rowsOf(root).map(row => textOf(row).length)).toEqual([TEXT_WIDTH, TEXT_WIDTH, TEXT_WIDTH])
   for (const row of rowsOf(root)) expect(onPanel(row, '#262439')).toBe(true)
 })
 
 test('rules a thematic break in the border colour', async $ => {
   const root = await reply($, 'above\n\n***\n\nbelow')
-  expect(rowsOf(root).map(row => textOf(row).trimEnd())).toEqual(['  above', '', '  --------', '', '  below'])
+  expect(await lines($, 'above\n\n***\n\nbelow')).toEqual(['  above', '', '  --------', '', '  below'])
   expect(find(root, '--------')?.props.color).toBe('#3e3859')
 })
 
@@ -218,16 +352,15 @@ test('lays a table out with inner borders, aligned per column', async $ => {
 
 test('puts a code block on a panel with a row above and below and two cells either side', async $ => {
   const root = await reply($, '```\nx\n```')
-  const rows = rowsOf(root).map(textOf)
-  expect(rows.map(row => row.trimEnd())).toEqual(['', '      x', ''])
+  expect(await lines($, '```\nx\n```')).toEqual(['', '      x', '', '    copy'])
   // The block's margin is two cells on the right as on the left.
-  expect(rows.map(row => row.length)).toEqual([TEXT_WIDTH, TEXT_WIDTH, TEXT_WIDTH])
+  expect(rowsOf(root).map(row => textOf(row).length)).toEqual([TEXT_WIDTH - 2, TEXT_WIDTH - 2, TEXT_WIDTH - 2])
   for (const row of rowsOf(root)) expect(onPanel(row, '#171527')).toBe(true)
 })
 
 test('highlights code by its fence language, tabs drawn as spaces', async $ => {
   const root = await reply($, '```go\nfunc main() {\n\treturn "hi"\n}\n```')
-  expect(rowsOf(root).map(row => textOf(row).trimEnd())).toEqual(['', '      func main() {', '          return "hi"', '      }', ''])
+  expect(await lines($, '```go\nfunc main() {\n\treturn "hi"\n}\n```')).toEqual(['', '      func main() {', '          return "hi"', '      }', '', '    copy'])
   expect(find(root, 'func')?.props).toMatchObject({ color: '#c792ea', backgroundColor: '#171527' })
   expect(find(root, 'main')?.props.color).toBe('#ffe6b3')
   expect(find(root, '"hi"')?.props.color).toBe('#a1efd3')
@@ -318,7 +451,7 @@ test('ends a sentence inside bold text and starts one at inline code', async $ =
 })
 
 test('splits sentences in list items and quotes too', async $ => {
-  expect(await lines($, '- One. Two.\n\n> Three. Four.')).toEqual(['  • One.', '    Two.', '', '  ▎ Three.', '  ▎ Four.'])
+  expect(await lines($, '- One. Two.\n\n> Three. Four.')).toEqual(['  - One.', '    Two.', '', '  ▎ Three.', '  ▎ Four.', '    copy'])
 })
 
 // MARK: Parser
