@@ -33,7 +33,7 @@ Set them in `/config`, or in `~/.claude/settings.json` under `pluginConfigs.read
 
 | Option | Values | Default |
 | --- | --- | --- |
-| `theme` | `ghostty`: the colours of [Ghostty](https://ghostty.org)'s current theme, read once when Claude starts, every colour held to a readable contrast; `embark` outside Ghostty. `embark`: matches the [Embark](https://github.com/embark-theme) terminal theme. `dark`: the colours of [glamour](https://github.com/charmbracelet/glamour)'s dark style. | `ghostty` |
+| `theme` | `terminal`: the colours of the terminal's current theme, read once when Claude starts, every colour held to a readable contrast. In [Rex](https://www.superlogical.com/rex) it is the dark or light theme the app shows, read from the app's settings and the themes it ships; in [Ghostty](https://ghostty.org), Ghostty's theme; elsewhere `embark`. `ghostty` is its old name and does the same. `embark`: matches the [Embark](https://github.com/embark-theme) terminal theme. `dark`: the colours of [glamour](https://github.com/charmbracelet/glamour)'s dark style. | `terminal` |
 | `sentencePerLine` | Start each sentence of a reply on a line of its own. | `true` |
 
 Both themes assume a dark terminal background.
