@@ -33,7 +33,8 @@ Set them in `/config`, or in `~/.claude/settings.json` under `pluginConfigs.read
 
 | Option | Values | Default |
 | --- | --- | --- |
-| `theme` | `terminal`: the colours of the terminal's current theme, read once when Claude starts, every colour held to a readable contrast. In [Rex](https://www.superlogical.com/rex) it is the dark or light theme the app shows, read from the app's settings and the themes it ships; in [Ghostty](https://ghostty.org), Ghostty's theme; elsewhere `embark`. `ghostty` is its old name and does the same. `embark`: matches the [Embark](https://github.com/embark-theme) terminal theme. `dark`: the colours of [glamour](https://github.com/charmbracelet/glamour)'s dark style. | `terminal` |
+| `theme` | `terminal`: the colours of the terminal's current theme, every colour held to a readable contrast. In [Rex](https://www.superlogical.com/rex) it is the dark or light theme the app shows, built-in or imported, read from the app's settings; switching themes in Rex redraws the transcript within a couple of seconds. In [Ghostty](https://ghostty.org), Ghostty's theme; elsewhere `embark`. `ghostty` is its old name and does the same. `embark`: matches the [Embark](https://github.com/embark-theme) terminal theme. `dark`: the colours of [glamour](https://github.com/charmbracelet/glamour)'s dark style. | `terminal` |
 | `sentencePerLine` | Start each sentence of a reply on a line of its own. | `true` |
+| `claudeTheme` | Inside Rex, keep a Claude Code custom theme at `~/.claude/themes/rex.json` in step with Rex's theme: diff backgrounds in the theme's own red and green, its accent, status and border colours. Pick "Rex · …" in `/theme` once; after that it follows every theme switch. | `true` |
 
 Both themes assume a dark terminal background.

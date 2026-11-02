@@ -1,6 +1,6 @@
 {
   "name": "readable",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Styled replies and prompts: Markdown drawn with solid panels for code, quotes, prompts and pastes",
   "author": { "name": "Emil Thaudal Bønnerup" },
   "userConfig": {
@@ -15,6 +15,12 @@
       "type": "boolean",
       "title": "One sentence per line",
       "description": "Start each sentence of a reply on a line of its own.",
+      "default": true
+    },
+    "claudeTheme": {
+      "type": "boolean",
+      "title": "Match Claude Code's theme to Rex",
+      "description": "Inside Rex, keep ~/.claude/themes/rex.json in step with Rex's theme (diff backgrounds, accents, status colours). Pick \"Rex · …\" in /theme once to use it.",
       "default": true
     }
   }

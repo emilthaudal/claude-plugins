@@ -3,7 +3,19 @@ import { parse, type Block } from './markdown'
 import { pasteShown, promptParts } from './prompt'
 import { BLOCK_MARGIN, MARGIN, render, type ListNode, type Node, type Row } from './render'
 import { oneSentencePerLine } from './sentences'
-import { fromPalette, over, parseGhosttyConfig, parseRexTheme, rexThemeId, THEMES, type Theme, type ThemeName } from './theme'
+import {
+  claudeCodeTheme,
+  fromPalette,
+  over,
+  parseGhosttyConfig,
+  parseRexCustomTheme,
+  parseRexTheme,
+  rexThemeId,
+  THEMES,
+  type Palette,
+  type Theme,
+  type ThemeName,
+} from './theme'
 
 // MARK: Reply rows
 
@@ -34,12 +46,16 @@ class RecentLayouts {
 
 // MARK: Options
 
-type Options = { theme: ThemeName; sentencePerLine: boolean }
+type Options = { theme: ThemeName; sentencePerLine: boolean; claudeTheme: boolean }
 
 function readOptions(raw: unknown): Options {
   const options = (raw ?? {}) as Record<string, unknown>
   const isNamed = options.theme === 'terminal' || options.theme === 'ghostty' || (typeof options.theme === 'string' && options.theme in THEMES)
-  return { theme: isNamed ? (options.theme as ThemeName) : 'terminal', sentencePerLine: options.sentencePerLine !== false }
+  return {
+    theme: isNamed ? (options.theme as ThemeName) : 'terminal',
+    sentencePerLine: options.sentencePerLine !== false,
+    claudeTheme: options.claudeTheme !== false,
+  }
 }
 
 type Engine = Parameters<Hook<'ui.render'>>[0]
@@ -51,23 +67,61 @@ const REX_THEMES = ['/Applications/Rex Beta.app', '/Applications/Rex.app'].map(
   app => `${app}/Contents/Resources/SuperUI_SuperDesignTokens.bundle/Contents/Resources/themes.json`,
 )
 
+// Imported themes sit in the app's defaults as a JSON blob under Workspace.customThemes; `defaults read` truncates
+// data, so the blob is exported, picked out with plutil (the dot escaped: it is one key, not a path) and decoded.
+const REX_CUSTOM_THEMES =
+  'defaults export com.superlogical.rex - | plutil -extract "Workspace\\.customThemes" raw -o - - | base64 -D'
+
+// How often the chosen theme is checked, so switching themes in Rex redraws the transcript without a restart.
+const REX_POLL_MS = 1500
+
 // Rex puts REX_SESSION in the environment of every terminal it starts. The app keeps the chosen dark and light
-// theme in its defaults, and themes.json holds each theme's colours.
-async function rexTheme($: Engine): Promise<Theme | undefined> {
+// theme in its defaults.
+async function isInRex($: Engine): Promise<boolean> {
   const session = await $.env.get('REX_SESSION')
-  if (session === undefined || session === '') return undefined
+  return session !== undefined && session !== ''
+}
+
+/** The id of the theme Rex is showing; undefined outside Rex or when it cannot be read. */
+async function rexShownThemeId($: Engine): Promise<string | undefined> {
+  if (!(await isInRex($))) return undefined
   const defaults = await $.process.run(['defaults', 'read', 'com.superlogical.rex'], { timeoutMs: 5000 })
   if (defaults.exitCode !== 0) return undefined
   // Fails when the system is in light mode, which reads as not dark.
   const style = await $.process.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'], { timeoutMs: 5000 })
-  const id = rexThemeId(defaults.stdout, style.exitCode === 0 && style.stdout.trim() === 'Dark')
-  if (id === undefined) return undefined
+  return rexThemeId(defaults.stdout, style.exitCode === 0 && style.stdout.trim() === 'Dark')
+}
+
+/** One Rex theme's colours: an imported one from the app's defaults, a built-in one from themes.json. */
+async function rexPalette($: Engine, id: string): Promise<Palette | undefined> {
+  if (id.startsWith('custom-')) {
+    const { exitCode, stdout } = await $.process.run(['sh', '-c', REX_CUSTOM_THEMES], { timeoutMs: 5000 })
+    return exitCode === 0 ? parseRexCustomTheme(stdout, id) : undefined
+  }
   for (const path of REX_THEMES) {
     const { exitCode, stdout } = await $.process.run(['cat', path], { timeoutMs: 5000 })
     const palette = exitCode === 0 ? parseRexTheme(stdout, id) : undefined
-    if (palette) return fromPalette(palette)
+    if (palette) return palette
   }
   return undefined
+}
+
+// MARK: Claude Code theme
+
+// Claude Code reloads custom themes from this folder when a file changes; pick "Rex · …" in /theme once.
+const CLAUDE_THEME_FILE = '.claude/themes/rex.json'
+let writesClaudeTheme = true
+let writtenClaudeTheme: string | undefined
+
+/** Writes Claude Code's `rex` theme from a Rex palette, so its diffs and accents follow Rex too. */
+async function writeClaudeTheme($: Engine, palette: Palette): Promise<void> {
+  if (!writesClaudeTheme) return
+  const text = `${JSON.stringify(claudeCodeTheme(palette), null, 2)}\n`
+  if (text === writtenClaudeTheme) return
+  const home = await $.env.get('HOME')
+  if (home === undefined || home === '') return
+  await $.fs.write(`${home}/${CLAUDE_THEME_FILE}`, text)
+  writtenClaudeTheme = text
 }
 
 // MARK: Ghostty
@@ -82,24 +136,63 @@ async function ghosttyTheme($: Engine): Promise<Theme | undefined> {
   return palette && fromPalette(palette)
 }
 
-// The terminal's colours are read once, on the first draw: Rex's, else Ghostty's; when neither can be read, Embark's.
+/** A Rex theme's colours, else Ghostty's; when neither can be read, Embark's. */
+async function terminalTheme($: Engine, rexId: string | undefined): Promise<Theme> {
+  const rex = rexId === undefined ? undefined : await rexPalette($, rexId).catch(() => undefined)
+  if (rex !== undefined) {
+    await writeClaudeTheme($, rex).catch(() => undefined)
+    return fromPalette(rex)
+  }
+  return (await ghosttyTheme($).catch(() => undefined)) ?? THEMES.embark
+}
+
+// The terminal's colours are read on the first draw. Inside Rex they are read again whenever the chosen theme
+// changes: a timer checks it, swaps the colours in and redraws, and `themeVersion` keys the cached layouts.
 let terminal: Promise<Theme> | undefined
+let shownRexId: string | undefined
+let themeVersion = 0
+
 function themeFor($: Engine, name: ThemeName): Promise<Theme> {
   if (name !== 'terminal' && name !== 'ghostty') return Promise.resolve(THEMES[name])
-  terminal ??= rexTheme($)
-    .catch(() => undefined)
-    .then(theme => theme ?? ghosttyTheme($))
-    .then(
-      theme => theme ?? THEMES.embark,
-      () => THEMES.embark,
-    )
+  if (terminal === undefined) {
+    terminal = rexShownThemeId($)
+      .catch(() => undefined)
+      .then(id => {
+        shownRexId = id
+        return terminalTheme($, id)
+      })
+      .catch(() => THEMES.embark)
+    // Outside Rex, or where the environment cannot be read, the colours stay as first read.
+    followRex($).catch(() => undefined)
+  }
   return terminal
+}
+
+async function followRex($: Engine): Promise<void> {
+  if (!(await isInRex($))) return
+  let isChecking = false
+  $.clock.every(REX_POLL_MS, () => {
+    if (isChecking) return
+    isChecking = true
+    void (async () => {
+      const id = await rexShownThemeId($).catch(() => undefined)
+      if (id === undefined || id === shownRexId) return
+      const theme = await terminalTheme($, id)
+      shownRexId = id
+      terminal = Promise.resolve(theme)
+      themeVersion++
+      $.ui.invalidate('ui.render')
+    })().finally(() => {
+      isChecking = false
+    })
+  })
 }
 
 // MARK: Hooks
 
 export const register: Register = (on, raw) => {
   const options = readOptions(raw)
+  writesClaudeTheme = options.claudeTheme
   const reshape = (blocks: Block[]) => (options.sentencePerLine ? oneSentencePerLine(blocks) : blocks)
   const recent = new RecentLayouts(200)
 
@@ -109,7 +202,7 @@ export const register: Register = (on, raw) => {
     if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
     const theme = await themeFor($, options.theme)
     const columns = (e.viewport?.columns ?? UNMEASURED_COLUMNS) - EDGE
-    const nodes = recent.get(`${columns}:${e.props.text}`, () => {
+    const nodes = recent.get(`${themeVersion}:${columns}:${e.props.text}`, () => {
       const blocks = reshape(parse(e.props.text))
       return blocks.length === 0 ? [] : render(blocks, theme, columns)
     })

@@ -1,7 +1,7 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 import { highlight } from '../hooks/highlight'
 import { parse } from '../hooks/markdown'
-import { contrast, fromPalette, parseGhosttyConfig, parseRexTheme, rexThemeId } from '../hooks/theme'
+import { claudeCodeTheme, contrast, fromPalette, mix, parseGhosttyConfig, parseRexCustomTheme, parseRexTheme, rexThemeId } from '../hooks/theme'
 
 // MARK: Harness
 
@@ -628,19 +628,50 @@ const REX_THEMES = JSON.stringify([
   { id: 'velvet-dusk', appearance: 'dark', source: { ...VELVET_DUSK, cursor: '#c9a1f0' } },
 ])
 
-function inRex(on: Parameters<TestBody>[1], { defaults = REX_DEFAULTS, systemDark = true } = {}) {
-  mock.env(on, { REX_SESSION: 'session:01a1' })
+// An imported theme, as Rex keeps it in Workspace.customThemes: each colour as 0–1 floats.
+const PLUM_INK = {
+  background: '#1d1321',
+  foreground: '#e0d8e4',
+  ansi: ['#2a1f2f', '#e8808d', '#8cc98f', '#dbb56f', '#7fa6e6', '#c495e0', '#6cc6c4', '#b9adbf'].concat(
+    ['#5f5165', '#f59aa5', '#a5dca7', '#ebc98b', '#9bbcf2', '#d4adec', '#8ad6d4', '#efe8f2'],
+  ),
+}
+const PLUM_INK_ID = 'custom-1BE7371E-083D-417A-8C66-FEE0E9EE2DD5'
+const floats = (hex: string) => {
+  const [red, green, blue] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+  return { red, green, blue, alpha: 1, colorSpace: 'srgb' }
+}
+const REX_CUSTOM_THEMES = JSON.stringify([
+  {
+    id: PLUM_INK_ID,
+    name: 'Plum Ink',
+    appearance: 'dark',
+    palette: { background: floats(PLUM_INK.background), foreground: floats(PLUM_INK.foreground), ansi: PLUM_INK.ansi.map(floats) },
+  },
+])
+const withPlumInk = (defaults: string) => defaults.replace('"velvet-dusk"', `"${PLUM_INK_ID}"`)
+
+// Inside Rex, readable checks the chosen theme on a timer; the clock is mocked so that timer waits on the test.
+function inRex(on: Parameters<TestBody>[1], { defaults = (): string => REX_DEFAULTS, systemDark = true } = {}) {
+  mock.env(on, { REX_SESSION: 'session:01a1', HOME: '/Users/me' })
+  const clock = mock.clock(on)
+  const writes: { path: string; text: string }[] = []
+  on('fs.write', ($, e) => {
+    writes.push({ path: e.path, text: e.text })
+    return { value: undefined } as never
+  })
   const runs: string[][] = []
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     runs.push(argv)
     const out = (exitCode: number, stdout: string) => ({ value: { exitCode, stdout, stderr: '' } }) as never
     if (argv[0] === 'defaults' && argv[2] === '-g') return systemDark ? out(0, 'Dark\n') : out(1, '')
-    if (argv[0] === 'defaults') return out(0, defaults)
+    if (argv[0] === 'defaults') return out(0, defaults())
     if (argv[0] === 'cat' && argv[1]?.startsWith('/Applications/Rex Beta.app/')) return out(0, REX_THEMES)
+    if (argv[0] === 'sh' && argv[2]?.includes('customThemes')) return out(0, REX_CUSTOM_THEMES)
     return out(1, '')
   })
-  return runs
+  return { runs, clock, writes }
 }
 
 test('picks the dark or light Rex theme by the app’s appearance, else the system’s', () => {
@@ -652,9 +683,63 @@ test('picks the dark or light Rex theme by the app’s appearance, else the syst
 })
 
 test('reads one theme’s colours out of Rex’s themes.json', () => {
-  expect(parseRexTheme(REX_THEMES, 'velvet-dusk')).toEqual(VELVET_DUSK)
+  expect(parseRexTheme(REX_THEMES, 'velvet-dusk')).toEqual({ ...VELVET_DUSK, cursor: '#c9a1f0' })
   expect(parseRexTheme(REX_THEMES, 'no-such-theme')).toBeUndefined()
   expect(parseRexTheme(JSON.stringify([{ id: 'short', source: { ...VELVET_DUSK, ansi: ['#000000'] } }]), 'short')).toBeUndefined()
+})
+
+test('reads an imported theme’s colours out of Rex’s custom themes', () => {
+  expect(parseRexCustomTheme(REX_CUSTOM_THEMES, PLUM_INK_ID)).toEqual({ ...PLUM_INK, name: 'Plum Ink' })
+  expect(parseRexCustomTheme(REX_CUSTOM_THEMES, 'custom-missing')).toBeUndefined()
+  const short = JSON.stringify([{ id: 'custom-short', palette: { background: floats('#000000'), foreground: floats('#ffffff'), ansi: [floats('#000000')] } }])
+  expect(parseRexCustomTheme(short, 'custom-short')).toBeUndefined()
+})
+
+test('draws in the colours of an imported Rex theme', async ($, on) => {
+  inRex(on, { defaults: () => withPlumInk(REX_DEFAULTS) })
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe(fromPalette(PLUM_INK).text.color)
+})
+
+test('follows a theme switch in Rex without a restart', async ($, on) => {
+  let defaults = REX_DEFAULTS
+  const { clock } = inRex(on, { defaults: () => defaults })
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe(fromPalette(VELVET_DUSK).text.color)
+  defaults = withPlumInk(REX_DEFAULTS)
+  await clock.advance(1500)
+  expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe(fromPalette(PLUM_INK).text.color)
+})
+
+test('builds a Claude Code theme whose diffs use the palette’s own red and green', () => {
+  const theme = claudeCodeTheme({ ...VELVET_DUSK, name: 'Velvet Dusk', cursor: '#c9a1f0' })
+  expect(theme.name).toBe('Rex · Velvet Dusk')
+  expect(theme.base).toBe('dark')
+  expect(theme.overrides.claude).toBe('#c9a1f0')
+  expect(theme.overrides.diffAdded).toBe(mix(VELVET_DUSK.background, VELVET_DUSK.ansi[2] as string, 0.2))
+  expect(theme.overrides.diffRemoved).toBe(mix(VELVET_DUSK.background, VELVET_DUSK.ansi[1] as string, 0.2))
+  // A "green" slot holding cyan is skipped for a real green further along.
+  const cyanGreen = [...VELVET_DUSK.ansi]
+  cyanGreen[2] = '#33b1ff'
+  expect(claudeCodeTheme({ ...VELVET_DUSK, ansi: cyanGreen }).overrides.diffAdded).toBe(
+    mix(VELVET_DUSK.background, VELVET_DUSK.ansi[10] as string, 0.2),
+  )
+})
+
+test('keeps Claude Code’s rex theme in step with Rex', async ($, on) => {
+  let defaults = REX_DEFAULTS
+  const { clock, writes } = inRex(on, { defaults: () => defaults })
+  await reply($, 'Hello there.')
+  expect(writes.map(w => w.path)).toEqual(['/Users/me/.claude/themes/rex.json'])
+  expect(JSON.parse(writes[0]?.text ?? '{}').overrides.claude).toBe('#c9a1f0')
+  defaults = withPlumInk(REX_DEFAULTS)
+  await clock.advance(1500)
+  expect(writes).toHaveLength(2)
+  expect(JSON.parse(writes[1]?.text ?? '{}').name).toBe('Rex · Plum Ink')
+})
+
+test('leaves Claude Code’s theme alone when told to', { options: { claudeTheme: false } }, async ($, on) => {
+  const { writes } = inRex(on)
+  await reply($, 'Hello there.')
+  expect(writes).toEqual([])
 })
 
 test('draws in the colours of Rex’s theme inside Rex', async ($, on) => {
@@ -664,7 +749,7 @@ test('draws in the colours of Rex’s theme inside Rex', async ($, on) => {
 })
 
 test('falls back to Embark when Rex’s theme cannot be read', async ($, on) => {
-  inRex(on, { defaults: '{\n}' })
+  inRex(on, { defaults: () => '{\n}' })
   expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe('#cbe3e7')
 })
 
