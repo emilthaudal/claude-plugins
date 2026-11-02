@@ -345,6 +345,7 @@ test('lays a table out with inner borders, aligned per column', async $ => {
     '  ───────┼─────',
     '   apple │   3',
     '   kiwi  │  12',
+    '    copy · copy as list',
   ])
 })
 
@@ -392,6 +393,46 @@ test('copies a code block’s text without its panel', async ($, on) => {
 
 test('copies a quote’s text without its bar or markers', async ($, on) => {
   expect(await copied($, on, '> Hi team,\n> please resend **these**.\n>\n> Thanks')).toBe('Hi team,\nplease resend **these**.\n\nThanks')
+})
+
+const ORDERS =
+  '| | The order you asked about | The other order in the file |\n| --- | --- | --- |\n' +
+  '| Order number | 600000048 | 600000047 |\n| Shipment number | 100000047 | 100000046 |'
+
+test('copies a table as a code block of plain columns, for Slack', async ($, on) => {
+  expect(await copied($, on, `Found both:\n\n${ORDERS}`)).toBe(
+    [
+      '```',
+      '                | The order you asked about | The other order in the file',
+      'Order number    | 600000048                 | 600000047',
+      'Shipment number | 100000047                 | 100000046',
+      '```',
+    ].join('\n'),
+  )
+})
+
+test('copies a table as a list, a bold heading per row and a bullet per other column', async ($, on) => {
+  expect(await copied($, on, ORDERS, 'copy-1')).toBe(
+    [
+      '*Order number*',
+      '• The order you asked about: 600000048',
+      '• The other order in the file: 600000047',
+      '',
+      '*Shipment number*',
+      '• The order you asked about: 100000047',
+      '• The other order in the file: 100000046',
+    ].join('\n'),
+  )
+})
+
+const FRUIT = '| Name | Qty |\n| :--- | ---: |\n| **apple** | 3 |\n| `kiwi` | |'
+
+test('keeps a column’s alignment and drops emphasis in a table’s code block', async ($, on) => {
+  expect(await copied($, on, FRUIT)).toBe(['```', 'Name  | Qty', 'apple |   3', 'kiwi  |', '```'].join('\n'))
+})
+
+test('leaves empty cells out of a table’s list and keeps inline code', async ($, on) => {
+  expect(await copied($, on, FRUIT, 'copy-1')).toBe(['*apple*', '• Qty: 3', '', '*`kiwi`*'].join('\n'))
 })
 
 test('gives each code block and quote a button of its own, and prose none', async ($, on) => {

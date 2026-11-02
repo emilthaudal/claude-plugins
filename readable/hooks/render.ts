@@ -375,9 +375,12 @@ function table(block: Extract<Block, { type: 'table' }>, { theme, width, look }:
  *
  * - `text`: one Text, its lines joined by newlines: prose lines, and the rows of panels and tables laid out here.
  * - `list`: a list's items, each one's marker in a column of its own so its wrapped text hangs under its first word.
- * - `copy`: the button under a code block or quote, with the text it copies.
+ * - `copy`: the buttons under a code block, quote or table, each with the text it copies.
  */
-export type Node = { kind: 'text'; lines: Row[] } | ListNode | { kind: 'copy'; text: string }
+export type Node = { kind: 'text'; lines: Row[] } | ListNode | { kind: 'copy'; copies: Copy[] }
+
+/** One button under a block: its label and what it puts on the clipboard. */
+export type Copy = { label: string; text: string }
 
 /** A list `indent` cells in from its edge, a blank row above it when `space`. */
 export type ListNode = { kind: 'list'; indent: number; space: boolean; items: ListItem[] }
@@ -388,11 +391,87 @@ export type ListItem = { space: boolean; parts: (Hung | ListNode)[] }
 /** Lines set `hang` cells in, the item's marker in those cells when they are its first. */
 export type Hung = { kind: 'hung'; marker?: Span; hang: number; lines: Row[] }
 
-// What a copy of a block puts on the clipboard: its text without the panel, bar or `>` markers around it.
-function rawOf(block: Block): string | undefined {
-  if (block.type === 'code') return block.value
-  if (block.type === 'blockquote') return block.source
-  return undefined
+// What the buttons under a block put on the clipboard: its text without the panel, bar or `>` markers around it. A
+// table copies in the two forms Slack draws, which shows a Markdown table as its pipes: a code block of plain columns,
+// and a list.
+function copiesOf(block: Block): Copy[] {
+  if (block.type === 'code') return [{ label: 'copy', text: block.value }]
+  if (block.type === 'blockquote') return [{ label: 'copy', text: block.source }]
+  if (block.type === 'table') return [{ label: 'copy', text: tableAsCode(block) }, { label: 'copy as list', text: tableAsList(block) }]
+  return []
+}
+
+// MARK: Shared tables
+
+type Table = Extract<Block, { type: 'table' }>
+
+// A cell as plain text: no emphasis marks, a link as its text and URL, a break as a space. `code` keeps an inline
+// code's backticks, which a list in Slack draws and a code block would show as they are.
+function plainOf(nodes: Inline[], code: boolean): string {
+  return nodes
+    .map(node => {
+      switch (node.type) {
+        case 'text':
+          return node.value
+        case 'emphasis':
+        case 'strong':
+        case 'delete':
+          return plainOf(node.children, code)
+        case 'inlineCode':
+          return code ? `\`${node.value}\`` : node.value
+        case 'link': {
+          const text = plainOf(node.children, code)
+          return text === node.url ? text : `${text} (${node.url})`
+        }
+        case 'url':
+          return node.url
+        case 'image':
+          return node.alt === '' ? node.url : `${node.alt} (${node.url})`
+        case 'break':
+          return ' '
+      }
+    })
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** A table as a code block of plain columns, a `|` between them: Slack draws it in a fixed-width font. */
+export function tableAsCode(block: Table): string {
+  const cells = [block.header, ...block.rows].map(row => block.align.map((_, c) => plainOf(row[c] ?? [], false)))
+  const widths = block.align.map((_, c) => Math.max(...cells.map(row => widthOf(row[c] ?? ''))))
+  const lines = cells.map(row =>
+    row
+      .map((cell, c) => {
+        const slack = (widths[c] ?? 0) - widthOf(cell)
+        const left = { right: slack, center: slack >> 1, left: 0 }[block.align[c] ?? 'left']
+        return ' '.repeat(left) + cell + ' '.repeat(slack - left)
+      })
+      .join(' | ')
+      .trimEnd(),
+  )
+  return ['```', ...lines, '```'].join('\n')
+}
+
+/**
+ * A table as a list: each row under its first cell in bold, a bullet for each other cell led by its column's header.
+ * Empty cells are left out. A table of one column is that column's header over a bullet per row.
+ */
+export function tableAsList(block: Table): string {
+  const header = block.header.map(cell => plainOf(cell, true))
+  const rows = block.rows.map(row => block.align.map((_, c) => plainOf(row[c] ?? [], true)))
+  const bold = (text: string) => `*${text}*`
+  if (block.align.length === 1) return [...(header[0] ? [bold(header[0])] : []), ...rows.map(([cell]) => `• ${cell ?? ''}`)].join('\n')
+  return rows
+    .map(([first = '', ...rest]) => {
+      const bullets = rest.flatMap((cell, i) => {
+        if (cell === '') return []
+        const name = header[i + 1] ?? ''
+        return [`• ${name === '' ? '' : `${name}: `}${cell}`]
+      })
+      return [...(first === '' ? [] : [bold(first)]), ...bullets].join('\n')
+    })
+    .join('\n\n')
 }
 
 // A paragraph's lines, cut only where it breaks itself (a sentence, a hard break).
@@ -459,7 +538,7 @@ export const BLOCK_MARGIN = CODE.margin
 
 /**
  * Lays a parsed reply out for `columns` cells, the reply's margin on each side included: blank lines between blocks,
- * and a copy button after each top-level code block and quote.
+ * and copy buttons after each top-level code block, quote and table.
  */
 export function render(blocks: Block[], theme: Theme, columns: number): Node[] {
   const frame = { theme, width: Math.max(columns - MARGIN * 2, 1), look: theme.text, nested: false }
@@ -473,8 +552,8 @@ export function render(blocks: Block[], theme: Theme, columns: number): Node[] {
         return text
       })
     }
-    const copy = rawOf(block)
-    if (copy !== undefined) nodes.push({ kind: 'copy', text: copy })
+    const copies = copiesOf(block)
+    if (copies.length > 0) nodes.push({ kind: 'copy', copies })
   }
   return nodes
 }

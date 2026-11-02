@@ -6,6 +6,7 @@ A Claude Code mod that draws Claude's replies, and your own prompts, as styled M
 - **Code blocks** on a solid panel, highlighted by language.
 - **Quotes** on a lighter panel with a bar.
 - **A copy button** under each code block and quote, which copies the text alone: no panel padding, bar or `>` markers.
+- **Two copy buttons** under each table, for pasting into Slack, which shows a Markdown table as raw pipes. `copy` takes a code block of plain aligned columns; `copy as list` takes a bold line per row and a `• Column: value` bullet for each other cell.
 - **Lists, tables and headings** laid out to the terminal's width, list items marked with `-` and their wrapped lines hung under the first word.
 - **Your prompts** on a panel with a `❯` mark. A paste shows as an inset block labelled `pasted · N lines`, folded to 8 lines until you expand the transcript with ctrl+o.
 - **One sentence per line** in replies, so long paragraphs are easier to scan.
@@ -19,7 +20,7 @@ In fullscreen mode Claude Code copies what you select with the mouse. readable l
 - A paragraph comes back as one line (one line per sentence with `sentencePerLine` on), not broken where the terminal wrapped it.
 - A list comes back as Markdown: `- item` and `1. item`, two spaces for each level of nesting, each item on one line.
 
-Claude Code copies every cell a selection covers, and a mod cannot mark cells as unselectable. So a selection that starts at the left edge also takes the reply's two-cell margin, as two spaces before each paragraph and item, and the `●` on the first line. The copy button under a code block or quote takes its text without the panel, padding or bar.
+Claude Code copies every cell a selection covers, and a mod cannot mark cells as unselectable. So a selection that starts at the left edge also takes the reply's two-cell margin, as two spaces before each paragraph and item, and the `●` on the first line. The copy button under a code block or quote takes its text without the panel, padding or bar, and the buttons under a table take it without its borders.
 
 ## Install
 

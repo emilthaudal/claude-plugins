@@ -26,6 +26,8 @@ const UNMEASURED_COLUMNS = 120
 const REPLY_MARK = '●'
 const PROMPT_MARK = '❯'
 const PASTE_BAR = '▎'
+// Between the copy buttons under a table.
+const COPY_GAP = ' · '
 
 /** Laid-out recent replies: a reply redraws on every scroll and resize, but its text and width rarely change. */
 class RecentLayouts {
@@ -240,19 +242,24 @@ export const register: Register = (on, raw) => {
     const drawn = nodes.map(node => {
       if (node.kind === 'text') return text(node.lines)
       if (node.kind === 'list') return list(node)
-      const raw = node.text
-      // Selecting a panel with the mouse takes its padding and bar along; the button copies the block's text alone.
-      const copy = Button({
-        key: `copy-${copies++}`,
-        label: 'copy',
-        plain: true,
-        dimColor: true,
-        onPress: async press => {
-          const { isCopied } = await $.ui.copy({ text: raw, surface: press.surface })
-          $.ui.toast(isCopied ? 'Copied' : 'Could not copy')
-        },
-      })
-      return Box({ paddingLeft: BLOCK_MARGIN, children: [copy] })
+      // Selecting a panel or table with the mouse takes its padding, bar or borders along; a button copies the block's
+      // text alone. A table has two, side by side, a dim dot between them.
+      // Each is as wide as what it draws (a plain Button draws its label alone), so the row keeps them together.
+      const fixed = (width: number, child: ReturnType<typeof Text>) => Box({ width, flexShrink: 0, children: [child] })
+      const buttons = node.copies.flatMap(({ label, text: raw }, i) => [
+        ...(i > 0 ? [fixed(COPY_GAP.length, Text({ dimColor: true, children: [COPY_GAP] }))] : []),
+        fixed(label.length, Button({
+          key: `copy-${copies++}`,
+          label,
+          plain: true,
+          dimColor: true,
+          onPress: async press => {
+            const { isCopied } = await $.ui.copy({ text: raw, surface: press.surface })
+            $.ui.toast(isCopied ? 'Copied' : 'Could not copy')
+          },
+        })),
+      ])
+      return Box({ paddingLeft: BLOCK_MARGIN, children: buttons })
     })
     // A blank row above and below sets the reply apart from the rows around it. The margins are layout, not spaces in
     // the text, so the rows the engine wraps a line onto start at the text and a selection leaves them out.
