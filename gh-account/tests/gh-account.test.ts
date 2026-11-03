@@ -58,6 +58,21 @@ test('leaves other commands, gh auth and chosen tokens alone', { options: OPTION
   }
 })
 
+test('leaves a command that only quotes gh in a heredoc or a string, like an orch receipt', { options: OPTIONS }, async ($, on) => {
+  const run = bash($, on)
+  const receipt = `~/.claude/skills/orchestrate/bin/orch report <<'EOF'\n## Verified\n\`gh pr view 19\` gave MERGED; then (gh pr checks) and git push origin x\nEOF`
+  for (const command of [receipt, `orch add --from 61 "retry; gh pr view (gh api)"`, `echo 'x | gh pr list'`, `ls # then gh pr list`]) {
+    expect(await run(`cd ${WORK} && ${command}`)).toBe(`cd ${WORK} && ${command}`)
+  }
+})
+
+test('still runs gh that a quoted string or an unquoted heredoc substitutes', { options: OPTIONS }, async ($, on) => {
+  const run = bash($, on)
+  for (const command of ['echo "me: $(gh api user --jq .login)"', 'cat <<EOF\n`gh api user`\nEOF', `cat <<'EOF'\ntext\nEOF\ngh pr list`]) {
+    expect(await run(`cd ${WORK} && ${command}`)).toBe(`${TOKEN('ada-work')}cd ${WORK} && ${command}`)
+  }
+})
+
 test('does nothing until rules or a default are set', async ($, on) => {
   const run = bash($, on)
   expect(await run(`cd ${WORK} && gh pr list`)).toBe(`cd ${WORK} && gh pr list`)

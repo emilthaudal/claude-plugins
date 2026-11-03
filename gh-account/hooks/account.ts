@@ -51,7 +51,139 @@ const LEAVE = /(?:^|[\s;&|(])gh\s+auth\b|\b(?:GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRIS
 export function needsAccount(command: string): boolean {
   // Most commands contain neither word, and a substring scan settles those without the regexes.
   if (!command.includes('gh') && !command.includes('git')) return false
-  return !LEAVE.test(command) && (GH.test(command) || GIT_NETWORK.test(command))
+  // Only what the shell runs counts: a `gh pr view` quoted in a message or a heredoc body is text, not a call.
+  const code = codeOf(command)
+  return !LEAVE.test(code) && (GH.test(code) || GIT_NETWORK.test(code))
+}
+
+// MARK: Literal text
+
+const blank = (text: string) => text.replace(/[^\n]/g, ' ')
+
+// A heredoc operator and its delimiter; a quoted or escaped delimiter makes the body literal.
+const HEREDOC = /^<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|(\\?)([A-Za-z_][\w-]*))/
+
+type Heredoc = { delimiter: string; tabs: boolean; literal: boolean }
+
+/**
+ * The command with the text the shell takes literally blanked out: comments, single-quoted strings, the bodies of
+ * heredocs with a quoted delimiter, and the plain parts of double-quoted strings and other heredocs. `$(…)` and
+ * backtick substitutions stay, since they run even inside double quotes.
+ */
+export function codeOf(command: string): string {
+  return scan(command).code(null)
+}
+
+function scan(s: string) {
+  let i = 0
+  const heredocs: Heredoc[] = []
+
+  // Shell code up to `stop` (the `)` of a `$(`, or the closing backtick), or the end.
+  function code(stop: string | null): string {
+    let out = ''
+    let depth = 0
+    while (i < s.length) {
+      const c = s[i] as string
+      if (c === stop && (stop !== ')' || depth === 0)) {
+        i++
+        return out
+      }
+      if (c === '\\') {
+        out += s.slice(i, i + 2)
+        i += 2
+      } else if (c === "'") {
+        const end = s.indexOf("'", i + 1)
+        const next = end < 0 ? s.length : end + 1
+        out += blank(s.slice(i, next))
+        i = next
+      } else if (c === '"') {
+        i++
+        out += ` ${quoted(false)} `
+      } else if (c === '$' && s[i + 1] === '(') {
+        i += 2
+        out += `$(${code(')')})`
+      } else if (c === '`') {
+        i++
+        out += `\`${code('`')}\``
+      } else if (c === '#' && (i === 0 || /[\s;&|(]/.test(s[i - 1] as string))) {
+        const end = s.indexOf('\n', i)
+        const next = end < 0 ? s.length : end
+        out += blank(s.slice(i, next))
+        i = next
+      } else if (s.startsWith('<<<', i)) {
+        out += '<<<'
+        i += 3
+      } else if (s.startsWith('<<', i)) {
+        const m = HEREDOC.exec(s.slice(i))
+        const op = m?.[0] ?? '<<'
+        if (m !== null) {
+          const literal = m[2] !== undefined || m[3] !== undefined || m[4] === '\\'
+          heredocs.push({ delimiter: m[2] ?? m[3] ?? (m[5] as string), tabs: m[1] === '-', literal })
+        }
+        out += op
+        i += op.length
+      } else if (c === '\n') {
+        i++
+        out += `\n${bodies()}`
+      } else {
+        if (c === '(') depth++
+        else if (c === ')') depth--
+        out += c
+        i++
+      }
+    }
+    return out
+  }
+
+  // A double-quoted string's inside, from after its opening quote; with `toEnd`, all that is left (a heredoc body).
+  function quoted(toEnd: boolean): string {
+    let out = ''
+    while (i < s.length) {
+      const c = s[i] as string
+      if (c === '"' && !toEnd) {
+        i++
+        return out
+      }
+      if (c === '\\') {
+        out += blank(s.slice(i, i + 2))
+        i += 2
+      } else if (c === '$' && s[i + 1] === '(') {
+        i += 2
+        out += `$(${code(')')})`
+      } else if (c === '`') {
+        i++
+        out += `\`${code('`')}\``
+      } else {
+        out += c === '\n' ? '\n' : ' '
+        i++
+      }
+    }
+    return out
+  }
+
+  // The bodies of the heredocs opened on the line that just ended, each up to and including its delimiter line.
+  function bodies(): string {
+    let out = ''
+    for (const heredoc of heredocs.splice(0)) {
+      const start = i
+      let close = s.length
+      while (i < s.length) {
+        const end = s.indexOf('\n', i)
+        const line = s.slice(i, end < 0 ? s.length : end)
+        const at = i
+        i = end < 0 ? s.length : end + 1
+        if ((heredoc.tabs ? line.replace(/^\t+/, '') : line) === heredoc.delimiter) {
+          close = at
+          break
+        }
+      }
+      const body = s.slice(start, close)
+      out += (heredoc.literal ? blank(body) : scan(body).quoted(true)) + blank(s.slice(close, i))
+    }
+    return out
+  }
+
+  return { code, quoted }
 }
 
 // MARK: Resolving
