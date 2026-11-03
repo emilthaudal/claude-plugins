@@ -7,7 +7,7 @@
     "rules": {
       "type": "string",
       "title": "Account rules",
-      "description": "Comma-separated <directory>=<account> or org:<org>=<account>, e.g. ~/work=me-work, org:acme=me-work. An org the command names wins, then the deepest directory it runs in. Empty: no rules.",
+      "description": "Comma-separated <directory>=<account> or org:<org>=<account>, e.g. ~/work=me-work, org:acme=me-work. An org the command names wins, then the org of its repo's origin remote, then the deepest directory it runs in. Empty: no rules.",
       "default": ""
     },
     "default": {

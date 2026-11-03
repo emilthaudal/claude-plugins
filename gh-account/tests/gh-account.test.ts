@@ -13,12 +13,17 @@ const ACCOUNTS: Accounts = accountsFrom(OPTIONS, HOME)
 type Outcome = { ran: string } | { refused: string }
 
 // Stands for the engine: runs nothing, keeps each command the Bash tool would have run. The session runs in the
-// home directory; commands name their own with `cd` or `git -C`. gh holds tokens for the `loggedIn` accounts.
+// home directory; commands name their own with `cd` or `git -C`. gh holds tokens for the `loggedIn` accounts, and
+// the repo checked out in /tmp/acme-api has an acme origin.
 function bash($: Engine, on: On, loggedIn = ['ada', 'ada-work']): (command: string) => Promise<Outcome> {
   let ran: string | null = null
   mock.env(on, { HOME })
   on('session.cwd', async () => ({ value: HOME }) as never)
   on('process.run', async (_, e) => {
+    if (e.argv[0] === 'git') {
+      const isRepo = e.argv[2] === '/tmp/acme-api'
+      return { value: { exitCode: isRepo ? 0 : 128, stdout: isRepo ? 'git@github.com:acme/api.git\n' : '', stderr: '' } } as never
+    }
     const [, , , , account] = e.argv
     const isKnown = loggedIn.includes(account ?? '')
     return { value: { exitCode: isKnown ? 0 : 1, stdout: isKnown ? 'gho_secret\n' : '', stderr: '' } } as never
@@ -51,6 +56,12 @@ test('refuses gh elsewhere, naming the default account', { options: OPTIONS }, a
 test('refuses a git push, naming the account for its directory', { options: OPTIONS }, async ($, on) => {
   const run = bash($, on)
   expect(await run('git -C ~/work/x push -u origin HEAD')).toEqual({ refused: 'ada-work' })
+})
+
+test("a repo's origin picks its org's account wherever it is checked out", { options: OPTIONS }, async ($, on) => {
+  const run = bash($, on)
+  expect(await run('cd /tmp/acme-api && git push -u origin HEAD')).toEqual({ refused: 'ada-work' })
+  expect(await run('cd /tmp/other && git push')).toEqual({ refused: 'ada' })
 })
 
 test('runs the command it suggests, unchanged', { options: OPTIONS }, async ($, on) => {
@@ -145,6 +156,14 @@ test('an org the command names picks the account wherever it runs', () => {
   expect(accountFor('gh repo clone Acme/api', HOME, HOME, ACCOUNTS)).toBe('ada-work')
   expect(accountFor('git clone https://github.com/acme/x.git', HOME, HOME, ACCOUNTS)).toBe('ada-work')
   expect(accountFor('gh pr list', `${WORK}-old`, HOME, ACCOUNTS)).toBe('ada')
+})
+
+test("the command's org comes before the repo's, and the repo's before its directory", () => {
+  const accounts = accountsFrom({ rules: '~/work=ada-work, org:acme=ada-work, org:ada=ada' }, HOME)
+  expect(accountFor('gh pr view 5 -R ada/x', WORK, HOME, accounts, 'acme')).toBe('ada')
+  expect(accountFor('gh pr list', WORK, HOME, accounts, 'ada')).toBe('ada')
+  expect(accountFor('gh pr list', '/tmp', HOME, accounts, 'Acme')).toBe('ada-work')
+  expect(accountFor('gh pr list', WORK, HOME, accounts, 'unknown')).toBe('ada-work')
 })
 
 test('the deepest directory rule wins', () => {

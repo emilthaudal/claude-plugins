@@ -218,14 +218,26 @@ function isUnder(dir: string, path: string): boolean {
   return path === '/' || dir === path || dir.startsWith(`${path}/`)
 }
 
+/** The GitHub org a command names: in a `-R`/`--repo`, a `gh repo clone|view|fork`, or a github.com URL. */
+export function orgOf(command: string): string | undefined {
+  return command.match(/(?:github\.com[/:]|(?:-R|--repo)[\s=]+|repo\s+(?:clone|view|fork)\s+)([\w.-]+)\//)?.[1]?.toLowerCase()
+}
+
+/** Whether any rule is an org rule, so the repo's remote is worth reading. */
+export function hasOrgRules(accounts: Accounts): boolean {
+  return accounts.rules.some(rule => rule.kind === 'org')
+}
+
 /**
- * The account a command runs as: the rule for an org it names, else the rule for the deepest directory it runs
- * under, else the fallback. Null when nothing applies, so the command runs as the active gh account.
+ * The account a command runs as: the rule for an org it names, else the rule for the org of the repo it runs in
+ * (`remoteOrg`, read from its origin remote), else the rule for the deepest directory it runs under, else the
+ * fallback. Null when nothing applies, so the command runs as the active gh account.
  */
-export function accountFor(command: string, cwd: string, home: string, accounts: Accounts): string | null {
-  const org = command.match(/(?:github\.com[/:]|(?:-R|--repo)[\s=]+|repo\s+(?:clone|view|fork)\s+)([\w.-]+)\//)?.[1]?.toLowerCase()
-  const byOrg = org === undefined ? undefined : accounts.rules.find(rule => rule.kind === 'org' && rule.org === org)
-  if (byOrg !== undefined) return byOrg.account
+export function accountFor(command: string, cwd: string, home: string, accounts: Accounts, remoteOrg?: string): string | null {
+  for (const org of [orgOf(command), remoteOrg?.toLowerCase()]) {
+    const byOrg = org === undefined ? undefined : accounts.rules.find(rule => rule.kind === 'org' && rule.org === org)
+    if (byOrg !== undefined) return byOrg.account
+  }
   const dir = directoryOf(command, cwd, home)
   let deepest: Extract<Rule, { kind: 'directory' }> | undefined
   for (const rule of accounts.rules) {

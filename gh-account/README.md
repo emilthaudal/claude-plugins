@@ -54,7 +54,9 @@ or in `~/.claude/settings.json`:
 
 - **`rules`**: comma-separated (or one per line) `<directory>=<account>` and `org:<org>=<account>`. A command that names
   an org's repo (`-R acme/api`, `gh repo clone acme/api`, a `github.com/acme/…` URL) uses that org's rule wherever it
-  runs. Otherwise the deepest directory rule the command runs under wins, following its `cd` and `git -C`.
+  runs. Otherwise the org of the repo it runs in, read from its `origin` remote, picks the rule, so a worktree in a
+  temporary directory still runs as its org's account. Otherwise the deepest directory rule the command runs under
+  wins, following its `cd` and `git -C`.
 - **`default`**: the account for everything no rule matches. Leave it empty to run those as the active account.
 
 With neither set, the mod does nothing.
