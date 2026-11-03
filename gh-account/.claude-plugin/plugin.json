@@ -1,6 +1,6 @@
 {
   "name": "gh-account",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Runs gh and git network commands as the GitHub account for their directory or org, with no gh auth switch",
   "author": { "name": "emilthaudal" },
   "userConfig": {
