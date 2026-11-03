@@ -235,14 +235,25 @@ export function accountFor(command: string, cwd: string, home: string, accounts:
   return deepest?.account ?? accounts.fallback
 }
 
-// The variable the token passes through, named so it can't clash with one the command uses.
-const SLOT = 'GH_ACCOUNT_MOD_TOKEN'
-
 /**
  * The command, run with the account's token: gh reads GH_TOKEN, and git reads it through gh's credential helper.
- * The token is read when the command runs, so it never appears in the command. An account with no token (logged
- * out, a typo) leaves GH_TOKEN as it was, and the command runs as the active account.
+ * The token is read when the command runs, so it never appears in the command. `export … &&` covers every part of
+ * a compound command, and stops it if the token can't be read rather than running it as another account.
  */
 export function withAccount(command: string, account: string): string {
-  return `${SLOT}="$(gh auth token --user ${account} 2>/dev/null)" && [ -n "$${SLOT}" ] && export GH_TOKEN="$${SLOT}"; unset ${SLOT}\n${command}`
+  return `export GH_TOKEN="$(gh auth token --user ${account})" && ${command}`
+}
+
+/**
+ * What the model reads when a command is refused for lacking an account: the command to run instead, written out,
+ * so auto mode reviews exactly what runs.
+ */
+export function refusal(command: string, account: string): string {
+  return [
+    `gh-account: this command talks to GitHub and must run as the GitHub account ${account}, chosen in the command itself. Nothing ran. Run this instead, unchanged:`,
+    '',
+    withAccount(command, account),
+    '',
+    `The token is read when the command runs and is never printed. Start every gh call and git push, pull, fetch, clone or ls-remote here the same way, with export GH_TOKEN="$(gh auth token --user ${account})" && in front.`,
+  ].join('\n')
 }

@@ -3,21 +3,33 @@
 Runs `gh` and git network commands (`push`, `pull`, `fetch`, `clone`, `ls-remote`) as the right GitHub account, so
 Claude never has to run `gh auth switch`, and never pushes as the wrong you.
 
-Each matching Bash command gets one line in front of it:
+A matching Bash command that doesn't choose an account is refused before it runs. Claude is told the exact command
+to run instead, which chooses the account itself:
 
 ```sh
-GH_ACCOUNT_MOD_TOKEN="$(gh auth token --user <account> 2>/dev/null)" && [ -n "$GH_ACCOUNT_MOD_TOKEN" ] && export GH_TOKEN="$GH_ACCOUNT_MOD_TOKEN"; unset GH_ACCOUNT_MOD_TOKEN
+export GH_TOKEN="$(gh auth token --user <account>)" && <the command>
 ```
 
-`gh` reads `GH_TOKEN`, and git reads it through gh's credential helper (the one `gh auth setup-git` installs).
+`gh` reads `GH_TOKEN`, and git reads it through gh's credential helper (the one `gh auth setup-git` installs). Claude
+learns the prefix from the first refusal and usually writes it unprompted after that.
+
+### Why refuse instead of rewriting
+
+Versions before 0.3 added the prefix to the command themselves. Auto mode reviews a command before hooks run, and it
+refuses any call a hook changed afterwards ("a hook changed this call's input after auto mode reviewed it"), so in
+auto mode every rewritten `gh` call and push was blocked. Now the command Claude writes is the command that runs, and
+auto mode reviews all of it. The alternatives don't work: an environment set for the session (`CLAUDE_ENV_FILE`) is
+open only to shell-command hooks, and setting `GH_TOKEN` for the Claude process per call would leak between
+subagents running in different accounts at the same time.
 
 ## Why it's safe
 
 - **The token is read when the command runs**, from gh's own keyring. It never appears in the command, the transcript
-  or a log.
+  or a log. The hook checks that the account has a token and drops it unread.
 - **Nothing changes globally.** The active gh account stays as it was; the token applies to that one command.
-- **A missing account changes nothing.** If gh has no token for the account (logged out, a typo), `GH_TOKEN` is left
-  alone and the command runs as the active account.
+- **A missing account changes nothing.** If gh has no token for the account (logged out, a typo), the command isn't
+  refused and runs as the active account. If the token disappears between the refusal and the retry, `&&` stops the
+  command rather than run it as someone else.
 - **Commands that choose for themselves are left alone**: `gh auth …`, and anything that sets `GH_TOKEN`,
   `GITHUB_TOKEN` or `GH_ENTERPRISE_TOKEN`.
 - **If the hook fails, the command runs unchanged**, exactly as without the mod.
@@ -53,8 +65,12 @@ With neither set, the mod does nothing.
 /plugin install gh-account --marketplace emilthaudal/claude-plugins
 ```
 
-In auto mode, the permission classifier sees the rewritten command. If it blocks commands for reading a token with
-`gh auth token`, add an allow rule for them.
+In auto mode, the classifier judges the prefixed command as written. If it blocks commands for reading a token with
+`gh auth token`, tell it about the prefix in `autoMode.allow` in `~/.claude/settings.json`, for example:
+
+```json
+"The gh-account prefix `export GH_TOKEN=\"$(gh auth token --user <account>)\" && ` on gh and git network commands, where <account> is me or me-work. It only picks which of the user's own GitHub accounts runs the command and never prints the token; judge the command that follows as if the prefix were absent"
+```
 
 ## Test
 
