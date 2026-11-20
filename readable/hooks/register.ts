@@ -320,7 +320,7 @@ export const register: Register = (on, raw) => {
         backgroundColor: pasted.backgroundColor,
         children: [
           Text({ ...label, children: [`pasted · ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`] }),
-          // The lines are one Text, joined by newlines as a reply's are: a paste of 20k lines is a few nodes, not 60k.
+          // The lines are one Text, joined by newlines as a reply's are: the layout places one Text for the paste instead of one per line.
           ...(shown.length > 0
             ? [
                 Text({

@@ -315,6 +315,8 @@ class InlineScanner {
   private emit(node: Piece, length: number): true {
     this.flush()
     this.pieces.push(node)
+    // A backtick inside a link, URL or autolink is not a code span, but the bracket map read it as one.
+    if (node.type !== 'inlineCode' && this.src.slice(this.pos, this.pos + length).includes('`')) this.closers = undefined
     this.pos += length
     return true
   }
@@ -374,7 +376,8 @@ class InlineScanner {
   }
 
   private link(open: number, image: boolean): boolean {
-    // One pass from the first `[` answers every later one, so a run of unmatched brackets is not rescanned for each.
+    // One pass from a `[` answers every later one, so a run of unmatched brackets is not rescanned for each; `emit`
+    // drops the map when the scanner consumes a backtick the pass took for a code span, and the next `[` rebuilds it.
     this.closers ??= matchingBrackets(this.src, open)
     const close = this.closers.get(open) ?? -1
     if (close === -1) return false
