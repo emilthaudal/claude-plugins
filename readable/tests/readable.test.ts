@@ -1,5 +1,6 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 import { highlight } from '../hooks/highlight'
+import { oneSentencePerLine } from '../hooks/sentences'
 import { parse } from '../hooks/markdown'
 import { claudeCodeTheme, contrast, fromPalette, mix, parseGhosttyConfig, parseRexCustomTheme, parseRexTheme, rexThemeId } from '../hooks/theme'
 
@@ -646,15 +647,9 @@ test('leaves Ghostty alone when a fixed theme is chosen', { options: { theme: 'e
 
 // MARK: Rex
 
-// What `defaults read com.superlogical.rex` prints, trimmed to the theme keys and one it skips.
-const REX_DEFAULTS = [
-  '{',
-  '    "Workspace.appearance" = dark;',
-  '    "Workspace.darkThemeID" = "velvet-dusk";',
-  '    "Workspace.interfaceStyle" = blendTheme;',
-  '    "Workspace.lightThemeID" = "lavender-postcard";',
-  '}',
-].join('\n')
+// The three `Workspace.*` keys readable reads from Rex's defaults, one `defaults read` each.
+type RexDefaults = { appearance?: string; darkThemeID?: string; lightThemeID?: string }
+const REX_DEFAULTS: RexDefaults = { appearance: 'dark', darkThemeID: 'velvet-dusk', lightThemeID: 'lavender-postcard' }
 
 // Velvet Dusk as Rex's themes.json holds it, beside a light theme readable must not pick.
 const VELVET_DUSK = {
@@ -690,12 +685,21 @@ const REX_CUSTOM_THEMES = JSON.stringify([
     palette: { background: floats(PLUM_INK.background), foreground: floats(PLUM_INK.foreground), ansi: PLUM_INK.ansi.map(floats) },
   },
 ])
-const withPlumInk = (defaults: string) => defaults.replace('"velvet-dusk"', `"${PLUM_INK_ID}"`)
+const withPlumInk = (defaults: RexDefaults): RexDefaults => ({ ...defaults, darkThemeID: PLUM_INK_ID })
+
+const REX_POLL_MS = 5000
 
 // Inside Rex, readable checks the chosen theme on a timer; the clock is mocked so that timer waits on the test.
-function inRex(on: Parameters<TestBody>[1], { defaults = (): string => REX_DEFAULTS, systemDark = true } = {}) {
+// `prefs.touch()` is a change to the preferences file, which the poll looks at before it reads anything.
+function inRex(on: Parameters<TestBody>[1], { defaults = (): RexDefaults => REX_DEFAULTS, systemDark = true } = {}) {
   mock.env(on, { REX_SESSION: 'session:01a1', HOME: '/Users/me' })
   const clock = mock.clock(on)
+  const prefs = { mtimeMs: 1000, stats: 0, touch: () => void (prefs.mtimeMs += 1000) }
+  on('fs.stat', ($, e) => {
+    if (!e.path.endsWith('.plist')) return { error: new Error('missing') } as never
+    prefs.stats++
+    return { value: { kind: 'file', size: 100, mtimeMs: prefs.mtimeMs, isLink: false } } as never
+  })
   const writes: { path: string; text: string }[] = []
   on('fs.write', ($, e) => {
     writes.push({ path: e.path, text: e.text })
@@ -707,20 +711,23 @@ function inRex(on: Parameters<TestBody>[1], { defaults = (): string => REX_DEFAU
     runs.push(argv)
     const out = (exitCode: number, stdout: string) => ({ value: { exitCode, stdout, stderr: '' } }) as never
     if (argv[0] === 'defaults' && argv[2] === '-g') return systemDark ? out(0, 'Dark\n') : out(1, '')
-    if (argv[0] === 'defaults') return out(0, defaults())
+    if (argv[0] === 'defaults') {
+      const value = defaults()[argv[3]?.replace('Workspace.', '') as keyof RexDefaults]
+      return value === undefined ? out(1, '') : out(0, `${value}\n`)
+    }
     if (argv[0] === 'cat' && argv[1]?.startsWith('/Applications/Rex Beta.app/')) return out(0, REX_THEMES)
     if (argv[0] === 'sh' && argv[2]?.includes('customThemes')) return out(0, REX_CUSTOM_THEMES)
     return out(1, '')
   })
-  return { runs, clock, writes }
+  return { runs, clock, writes, prefs }
 }
 
 test('picks the dark or light Rex theme by the app’s appearance, else the system’s', () => {
   expect(rexThemeId(REX_DEFAULTS, false)).toBe('velvet-dusk')
-  expect(rexThemeId(REX_DEFAULTS.replace('= dark;', '= light;'), true)).toBe('lavender-postcard')
-  expect(rexThemeId(REX_DEFAULTS.replace('= dark;', '= system;'), false)).toBe('lavender-postcard')
-  expect(rexThemeId(REX_DEFAULTS.replace('= dark;', '= system;'), true)).toBe('velvet-dusk')
-  expect(rexThemeId('{\n}', true)).toBeUndefined()
+  expect(rexThemeId({ ...REX_DEFAULTS, appearance: 'light' }, true)).toBe('lavender-postcard')
+  expect(rexThemeId({ ...REX_DEFAULTS, appearance: 'system' }, false)).toBe('lavender-postcard')
+  expect(rexThemeId({ ...REX_DEFAULTS, appearance: 'system' }, true)).toBe('velvet-dusk')
+  expect(rexThemeId({}, true)).toBeUndefined()
 })
 
 test('reads one theme’s colours out of Rex’s themes.json', () => {
@@ -743,11 +750,40 @@ test('draws in the colours of an imported Rex theme', async ($, on) => {
 
 test('follows a theme switch in Rex without a restart', async ($, on) => {
   let defaults = REX_DEFAULTS
-  const { clock } = inRex(on, { defaults: () => defaults })
+  const { clock, prefs } = inRex(on, { defaults: () => defaults })
   expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe(fromPalette(VELVET_DUSK).text.color)
   defaults = withPlumInk(REX_DEFAULTS)
-  await clock.advance(1500)
+  prefs.touch()
+  await clock.advance(REX_POLL_MS)
   expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe(fromPalette(PLUM_INK).text.color)
+})
+
+test('reads only the three theme keys, and nothing while Rex’s preferences are unchanged', async ($, on) => {
+  const { runs, clock, prefs } = inRex(on)
+  await reply($, 'Hello there.')
+  const defaultsRuns = () => runs.filter(argv => argv[0] === 'defaults')
+  expect(defaultsRuns().filter(argv => argv[1] === 'read' && argv[2] === 'com.superlogical.rex').map(argv => argv[3])).toEqual([
+    'Workspace.appearance',
+    'Workspace.darkThemeID',
+    'Workspace.lightThemeID',
+  ])
+  const first = defaultsRuns().length
+  await clock.advance(REX_POLL_MS * 3)
+  expect(defaultsRuns()).toHaveLength(first)
+  expect(prefs.stats).toBeGreaterThan(2)
+  prefs.touch()
+  await clock.advance(REX_POLL_MS)
+  expect(defaultsRuns()).toHaveLength(first * 2)
+})
+
+test('does not poll Rex’s theme more often than every five seconds', async ($, on) => {
+  const { clock, prefs } = inRex(on)
+  await reply($, 'Hello there.')
+  const before = prefs.stats
+  await clock.advance(REX_POLL_MS - 1)
+  expect(prefs.stats).toBe(before)
+  await clock.advance(1)
+  expect(prefs.stats).toBeGreaterThan(before)
 })
 
 test('builds a Claude Code theme whose diffs use the palette’s own red and green', () => {
@@ -767,12 +803,13 @@ test('builds a Claude Code theme whose diffs use the palette’s own red and gre
 
 test('keeps Claude Code’s rex theme in step with Rex', async ($, on) => {
   let defaults = REX_DEFAULTS
-  const { clock, writes } = inRex(on, { defaults: () => defaults })
+  const { clock, writes, prefs } = inRex(on, { defaults: () => defaults })
   await reply($, 'Hello there.')
   expect(writes.map(w => w.path)).toEqual(['/Users/me/.claude/themes/rex.json'])
   expect(JSON.parse(writes[0]?.text ?? '{}').overrides.claude).toBe('#c9a1f0')
   defaults = withPlumInk(REX_DEFAULTS)
-  await clock.advance(1500)
+  prefs.touch()
+  await clock.advance(REX_POLL_MS)
   expect(writes).toHaveLength(2)
   expect(JSON.parse(writes[1]?.text ?? '{}').name).toBe('Rex · Plum Ink')
 })
@@ -790,11 +827,70 @@ test('draws in the colours of Rex’s theme inside Rex', async ($, on) => {
 })
 
 test('falls back to Embark when Rex’s theme cannot be read', async ($, on) => {
-  inRex(on, { defaults: () => '{\n}' })
+  inRex(on, { defaults: () => ({}) })
   expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe('#cbe3e7')
 })
 
 test('still reads Rex’s theme under the old ghostty name', { options: { theme: 'ghostty' } }, async ($, on) => {
   inRex(on)
   expect(find(await reply($, 'Hello there.'), 'Hello')?.props.color).toBe(fromPalette(VELVET_DUSK).text.color)
+})
+
+// MARK: Lazy continuation
+
+test('a line without its indent continues an open paragraph of a list item', () => {
+  const [list] = parse('- first\ncontinues here')
+  expect(list).toMatchObject({ type: 'list', items: [{ children: [{ type: 'paragraph' }] }] })
+  expect(JSON.stringify(list)).toContain('continues here')
+})
+
+test('a paragraph after a fenced block in a nested item belongs to the parent item', () => {
+  const [list, ...rest] = parse('- parent\n  - nested\n    ```\n    code\n    ```\n  about the parent')
+  expect(rest).toEqual([])
+  const parent = (list as { items: { children: { type: string; items?: { children: { type: string }[] }[] }[] }[] }).items[0]
+  expect(parent?.children.map(child => child.type)).toEqual(['paragraph', 'list', 'paragraph'])
+  expect(parent?.children[1]?.items?.[0]?.children.map(child => child.type)).toEqual(['paragraph', 'code'])
+  expect(JSON.stringify(parent?.children[2])).toContain('about the parent')
+})
+
+test('a line without its indent does not continue a fenced block or a heading', () => {
+  expect(parse('- item\n  ```\n  code\nloose').map(block => block.type)).toEqual(['list', 'paragraph'])
+  expect(parse('- item\n  # Title\nloose').map(block => block.type)).toEqual(['list', 'paragraph'])
+})
+
+// MARK: Speed
+
+const timeOf = (run: () => void) => {
+  const start = performance.now()
+  run()
+  return performance.now() - start
+}
+
+test('breaks a 64 KB paragraph into sentences in linear time', () => {
+  const text = 'This is a sentence. Another one follows here! '.repeat(1400).slice(0, 65536)
+  const blocks = parse(text)
+  expect(timeOf(() => oneSentencePerLine(blocks))).toBeLessThan(50)
+})
+
+test('sentences still break after a long word and across a styled run', () => {
+  const long = 'x'.repeat(200)
+  const [paragraph] = oneSentencePerLine(parse(`${long}A. Next one. And **bold** end. Then more`))
+  const breaks = ((paragraph as { children: { type: string }[] }).children).filter(node => node.type === 'break')
+  expect(breaks).toHaveLength(3)
+})
+
+test('reads a run of unmatched brackets in linear time', () => {
+  const brackets = '['.repeat(12288)
+  expect(timeOf(() => parse(brackets))).toBeLessThan(20)
+  expect(parse('[a [b] c')[0]).toMatchObject({ type: 'paragraph' })
+  expect(JSON.stringify(parse('[x [y](https://e.com) z'))).toContain('"type":"link"')
+})
+
+// MARK: Pastes
+
+test('draws an expanded paste as one Text however many lines it has', async $ => {
+  const root = await prompt($, withPaste(2000), 'composer', true)
+  expect(texts(root).length).toBeLessThan(10)
+  expect(find(root, 'line 2000')).toBeDefined()
+  expect(find(root, 'line 2000')?.props).toMatchObject({ color: '#cbe3e7', backgroundColor: '#262439' })
 })

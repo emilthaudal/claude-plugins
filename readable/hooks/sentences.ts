@@ -29,6 +29,16 @@ function nodeOpens(node: Inline | undefined): boolean {
 
 // MARK: Splitting
 
+// How much of the text before a space endsSentence needs: the last word and the closing marks after it.
+const LOOKBACK = 40
+
+/** The end of `value` up to `end`, from a word boundary at least LOOKBACK characters back; the whole of it when shorter. */
+function tailBefore(value: string, end: number, before: string): string {
+  let start = Math.max(0, end - LOOKBACK)
+  while (start > 0 && !/\s/u.test(value[start - 1] ?? '')) start--
+  return (start === 0 ? before.slice(-LOOKBACK) : '') + value.slice(start, end)
+}
+
 /** Puts a line break in each space that follows a sentence; `before` is the text the run follows. */
 function breakText(value: string, before: string, next: Inline | undefined): Inline[] {
   const out: Inline[] = []
@@ -37,7 +47,7 @@ function breakText(value: string, before: string, next: Inline | undefined): Inl
   for (let gap = gaps.exec(value); gap !== null; gap = gaps.exec(value)) {
     const after = gap.index + gap[0].length
     const starts = after < value.length ? opensWith(value[after]) : nodeOpens(next)
-    if (!starts || !endsSentence(before + value.slice(0, gap.index))) continue
+    if (!starts || !endsSentence(tailBefore(value, gap.index, before))) continue
     if (gap.index > from) out.push({ type: 'text', value: value.slice(from, gap.index) })
     out.push({ type: 'break' })
     from = after

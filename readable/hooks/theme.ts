@@ -245,12 +245,13 @@ export function parseGhosttyConfig(text: string): Palette | undefined {
 
 // MARK: Rex
 
-/** Which Rex theme is showing, from `defaults read com.superlogical.rex`: the dark or light one, by the app's appearance. */
-export function rexThemeId(defaults: string, isSystemDark: boolean): string | undefined {
-  const read = (key: string) => new RegExp(`"Workspace\\.${key}" = "?([^";]+)"?;`).exec(defaults)?.[1]
-  const appearance = read('appearance')
+export type RexThemeKeys = { appearance?: string | undefined; darkThemeID?: string | undefined; lightThemeID?: string | undefined }
+
+/** Which Rex theme is showing, from the app's `Workspace.*` defaults: the dark or light one, by the app's appearance. */
+export function rexThemeId({ appearance, darkThemeID, lightThemeID }: RexThemeKeys, isSystemDark: boolean): string | undefined {
   const isDark = appearance === 'dark' || (appearance !== 'light' && isSystemDark)
-  return read(isDark ? 'darkThemeID' : 'lightThemeID')
+  const id = isDark ? darkThemeID : lightThemeID
+  return id === undefined || id === '' ? undefined : id
 }
 
 /** One theme's colours out of the themes.json Rex ships; undefined when it is missing or incomplete. */
