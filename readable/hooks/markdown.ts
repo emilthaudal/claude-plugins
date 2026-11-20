@@ -78,6 +78,25 @@ function interrupts(line: string): boolean {
   return item !== undefined && item.rest.trim() !== ''
 }
 
+// Follows the lines of a list item's body to tell whether the last is part of a paragraph still open: not blank, not
+// inside or closing a fence, not a heading or a rule. Only such a line can be carried on by a line without its indent.
+class OpenParagraph {
+  isOpen = false
+  private marker: string | undefined
+
+  push(line: string): void {
+    if (this.marker !== undefined) {
+      const trimmed = line.trim()
+      if (indentOf(line) < 4 && trimmed.length >= this.marker.length && trimmed === this.marker[0]?.repeat(trimmed.length)) this.marker = undefined
+      this.isOpen = false
+      return
+    }
+    const open = OPEN_FENCE.exec(line)
+    if (open !== null) this.marker = open[2]
+    this.isOpen = open === null && !isBlank(line) && !ATX_HEADING.test(line) && !BREAK_LINE.test(line)
+  }
+}
+
 function splitRow(row: string): string[] {
   let body = row.trim()
   if (body.startsWith('|')) body = body.slice(1)
@@ -196,12 +215,17 @@ class BlockReader {
     while (next !== undefined && sameList(next)) {
       const { content } = next
       const body = [next.rest]
+      const paragraph = new OpenParagraph()
+      paragraph.push(next.rest)
       for (this.at++; this.at < this.lines.length; this.at++) {
         const line = this.line
-        if (isBlank(line)) body.push('')
-        else if (indentOf(line) >= content) body.push(line.slice(content))
-        else if (!isBlank(body.at(-1)) && !interrupts(line) && itemStart(line) === undefined) body.push(line.trim())
+        let added: string
+        if (isBlank(line)) added = ''
+        else if (indentOf(line) >= content) added = line.slice(content)
+        else if (paragraph.isOpen && !interrupts(line) && itemStart(line) === undefined) added = line.trim()
         else break
+        body.push(added)
+        paragraph.push(added)
       }
       items.push(taskOf(body))
       next = this.at < this.lines.length ? itemStart(this.line) : undefined
@@ -271,6 +295,7 @@ class InlineScanner {
   private pos = 0
   private pieces: Piece[] = []
   private buffer = ''
+  private closers: Map<number, number> | undefined
 
   constructor(private readonly src: string) {}
 
@@ -290,6 +315,8 @@ class InlineScanner {
   private emit(node: Piece, length: number): true {
     this.flush()
     this.pieces.push(node)
+    // A backtick inside a link, URL or autolink is not a code span, but the bracket map read it as one.
+    if (node.type !== 'inlineCode' && this.src.slice(this.pos, this.pos + length).includes('`')) this.closers = undefined
     this.pos += length
     return true
   }
@@ -349,7 +376,10 @@ class InlineScanner {
   }
 
   private link(open: number, image: boolean): boolean {
-    const close = closingBracket(this.src, open)
+    // One pass from a `[` answers every later one, so a run of unmatched brackets is not rescanned for each; `emit`
+    // drops the map when the scanner consumes a backtick the pass took for a code span, and the next `[` rebuilds it.
+    this.closers ??= matchingBrackets(this.src, open)
+    const close = this.closers.get(open) ?? -1
     if (close === -1) return false
     const target = LINK_TARGET.exec(this.src.slice(close + 1))
     if (target === null) return false
@@ -407,10 +437,11 @@ function matchingTicks(src: string, from: number, length: number): number {
   return -1
 }
 
-// The `]` that closes the label opened at `open`, past escapes, code spans and nested brackets; -1 when none does.
-function closingBracket(src: string, open: number): number {
-  let depth = 0
-  for (let i = open; i < src.length; i++) {
+// Every `[` from `from` on that has a closing `]`, mapped to it, past escapes, code spans and nested brackets.
+function matchingBrackets(src: string, from: number): Map<number, number> {
+  const closers = new Map<number, number>()
+  const opens: number[] = []
+  for (let i = from; i < src.length; i++) {
     const ch = src[i]
     if (ch === '\\') i++
     else if (ch === '`') {
@@ -418,10 +449,13 @@ function closingBracket(src: string, open: number): number {
       while (src[end] === '`') end++
       const close = matchingTicks(src, end, end - i)
       i = (close === -1 ? end : close + (end - i)) - 1
-    } else if (ch === '[') depth++
-    else if (ch === ']' && --depth === 0) return i
+    } else if (ch === '[') opens.push(i)
+    else if (ch === ']') {
+      const open = opens.pop()
+      if (open !== undefined) closers.set(open, i)
+    }
   }
-  return -1
+  return closers
 }
 
 // A URL stops before the sentence's punctuation, and keeps a closing paren only when it opened one.

@@ -75,7 +75,7 @@ const REX_CUSTOM_THEMES =
   'defaults export com.superlogical.rex - | plutil -extract "Workspace\\.customThemes" raw -o - - | base64 -D'
 
 // How often the chosen theme is checked, so switching themes in Rex redraws the transcript without a restart.
-const REX_POLL_MS = 1500
+const REX_POLL_MS = 5000
 
 // Rex puts REX_SESSION in the environment of every terminal it starts. The app keeps the chosen dark and light
 // theme in its defaults.
@@ -84,14 +84,43 @@ async function isInRex($: Engine): Promise<boolean> {
   return session !== undefined && session !== ''
 }
 
+// The only keys read: the whole domain is over 600 KB. They are flat keys with a dot in their name, not a path.
+const REX_THEME_KEYS = ['appearance', 'darkThemeID', 'lightThemeID'] as const
+
+// The preferences files whose change can change the shown theme: Rex's own, and the system's for "follow the system".
+const REX_PREFERENCES = ['Library/Preferences/com.superlogical.rex.plist', 'Library/Preferences/.GlobalPreferences.plist']
+
+/** A string that changes when either preferences file does; undefined when they cannot be stat'ed. */
+async function preferencesStamp($: Engine): Promise<string | undefined> {
+  const home = await $.env.get('HOME')
+  if (home === undefined || home === '') return undefined
+  const stats = await Promise.all(REX_PREFERENCES.map(path => $.fs.stat(`${home}/${path}`).catch(() => undefined)))
+  return stats.some(stat => stat === undefined) ? undefined : stats.map(stat => `${stat?.mtimeMs}:${stat?.size}`).join('|')
+}
+
+let shownStamp: string | undefined
+let stampedId: string | undefined
+
 /** The id of the theme Rex is showing; undefined outside Rex or when it cannot be read. */
 async function rexShownThemeId($: Engine): Promise<string | undefined> {
   if (!(await isInRex($))) return undefined
-  const defaults = await $.process.run(['defaults', 'read', 'com.superlogical.rex'], { timeoutMs: 5000 })
-  if (defaults.exitCode !== 0) return undefined
+  const stamp = await preferencesStamp($)
+  if (stamp !== undefined && stamp === shownStamp) return stampedId
+  const values = await Promise.all(
+    REX_THEME_KEYS.map(async key => {
+      const { exitCode, stdout } = await $.process.run(['defaults', 'read', 'com.superlogical.rex', `Workspace.${key}`], { timeoutMs: 5000 })
+      return exitCode === 0 ? stdout.trim() : undefined
+    }),
+  )
   // Fails when the system is in light mode, which reads as not dark.
   const style = await $.process.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'], { timeoutMs: 5000 })
-  return rexThemeId(defaults.stdout, style.exitCode === 0 && style.stdout.trim() === 'Dark')
+  const [appearance, darkThemeID, lightThemeID] = values
+  const id = rexThemeId({ appearance, darkThemeID, lightThemeID }, style.exitCode === 0 && style.stdout.trim() === 'Dark')
+  if (id !== undefined) {
+    shownStamp = stamp
+    stampedId = id
+  }
+  return id
 }
 
 /** One Rex theme's colours: an imported one from the app's defaults, a built-in one from themes.json. */
@@ -291,9 +320,19 @@ export const register: Register = (on, raw) => {
         backgroundColor: pasted.backgroundColor,
         children: [
           Text({ ...label, children: [`pasted · ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`] }),
-          ...shown.map(line =>
-            Text({ ...pasted, children: [Text({ ...bar, children: [`${PASTE_BAR} `] }), Text({ ...pasted, children: [line === '' ? ' ' : line] })] }),
-          ),
+          // The lines are one Text, joined by newlines as a reply's are: the layout places one Text for the paste instead of one per line.
+          ...(shown.length > 0
+            ? [
+                Text({
+                  ...pasted,
+                  children: shown.flatMap((line, i) => [
+                    ...(i > 0 ? ['\n'] : []),
+                    Text({ ...bar, children: [`${PASTE_BAR} `] }),
+                    Text({ ...pasted, children: [line === '' ? ' ' : line] }),
+                  ]),
+                }),
+              ]
+            : []),
           ...(hidden > 0 ? [Text({ ...label, children: [`… ${hidden} more lines (ctrl+o to expand)`] })] : []),
         ],
       })
