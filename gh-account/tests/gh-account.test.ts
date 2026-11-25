@@ -86,7 +86,7 @@ test('offers no gh-as for a compound command, which it would not cover whole', (
   expect(refusal('gh pr create --body "a b"', 'ada-work')).not.toContain('gh-as')
 })
 
-test('never puts the token in the refusal',{ options: OPTIONS }, async ($, on) => {
+test('never puts the token in the refusal', { options: OPTIONS }, async ($, on) => {
   const run = bash($, on)
   const outcome = await run('gh pr list')
   expect(JSON.stringify(outcome)).not.toContain('gho_secret')

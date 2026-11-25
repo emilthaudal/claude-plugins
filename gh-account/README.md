@@ -94,4 +94,5 @@ In auto mode, the classifier judges the prefixed command as written. If it block
 ```
 claude plugin validate gh-account
 claude plugin test gh-account
+sh gh-account/tests/gh-as.test.sh
 ```
