@@ -1,0 +1,47 @@
+#!/bin/sh
+# gh-as ACCOUNT COMMAND [ARGS...]: run COMMAND with GH_TOKEN set to ACCOUNT's gh token.
+#
+#   gh-as emilthaudalwg git push -u origin my-branch
+#   gh-as emilthaudalwg gh pr create --fill
+#
+# The same as `export GH_TOKEN="$(gh auth token --user ACCOUNT)" && COMMAND`, as one plain command: a session
+# whose git is limited to plain commands (a worktree-isolated one) can't run the compound form. The token is read
+# when the command runs and is never printed. If gh has no token for ACCOUNT, nothing runs.
+set -eu
+# An inherited SHELLOPTS=xtrace would print the token below.
+set +x
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: gh-as ACCOUNT COMMAND [ARGS...]" >&2
+  exit 2
+fi
+
+account=$1
+shift
+# An empty account would make `gh auth token --user ""` answer with the active account's token.
+case $account in
+  '' | *[!A-Za-z0-9-]* | -*)
+    echo "gh-as: '$account' is not a GitHub login" >&2
+    exit 2
+    ;;
+esac
+# exec would read a leading dash as its own option (`-c` clears the environment, token included).
+case $1 in
+  -*)
+    echo "gh-as: the command must not start with a dash" >&2
+    exit 2
+    ;;
+esac
+
+token=$(gh auth token --user "$account") || {
+  echo "gh-as: gh has no token for $account" >&2
+  exit 1
+}
+[ -n "$token" ] || {
+  echo "gh-as: gh has no token for $account" >&2
+  exit 1
+}
+
+GH_TOKEN=$token
+export GH_TOKEN
+exec "$@"
