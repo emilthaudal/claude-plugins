@@ -256,6 +256,11 @@ export function withAccount(command: string, account: string): string {
   return `export GH_TOKEN="$(gh auth token --user ${account})" && ${command}`
 }
 
+/** Whether the command is one simple command, so `gh-as <account>` in front of it covers all of it. */
+function isPlain(command: string): boolean {
+  return !/[\n;&|()<>`$\\'"]/.test(command)
+}
+
 /**
  * What the model reads when a command is refused for lacking an account: the command to run instead, written out,
  * so auto mode reviews exactly what runs.
@@ -267,5 +272,8 @@ export function refusal(command: string, account: string): string {
     withAccount(command, account),
     '',
     `The token is read when the command runs and is never printed. Start every gh call and git push, pull, fetch, clone or ls-remote here the same way, with export GH_TOKEN="$(gh auth token --user ${account})" && in front.`,
+    ...(isPlain(command)
+      ? ['', `If that is refused as too complex (a worktree-isolated session only runs plain git commands), run it as one plain command instead: gh-as ${account} ${command}`]
+      : []),
   ].join('\n')
 }

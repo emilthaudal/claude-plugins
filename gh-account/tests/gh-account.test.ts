@@ -73,7 +73,20 @@ test('runs the command it suggests, unchanged', { options: OPTIONS }, async ($, 
   expect(await run(suggested)).toEqual({ ran: suggested })
 })
 
-test('never puts the token in the refusal', { options: OPTIONS }, async ($, on) => {
+test('offers gh-as for a plain command, which the mod itself lets through', { options: OPTIONS }, async ($, on) => {
+  const run = bash($, on)
+  const wrapped = 'gh-as ada-work git push -u origin my-branch'
+  expect(refusal('git push -u origin my-branch', 'ada-work')).toContain(`instead: ${wrapped}`)
+  expect(await run(wrapped)).toEqual({ ran: wrapped })
+  expect(await run('gh-as ada-work gh pr create --fill')).toEqual({ ran: 'gh-as ada-work gh pr create --fill' })
+})
+
+test('offers no gh-as for a compound command, which it would not cover whole', () => {
+  expect(refusal('cd ~/work/api && git push', 'ada-work')).not.toContain('gh-as')
+  expect(refusal('gh pr create --body "a b"', 'ada-work')).not.toContain('gh-as')
+})
+
+test('never puts the token in the refusal',{ options: OPTIONS }, async ($, on) => {
   const run = bash($, on)
   const outcome = await run('gh pr list')
   expect(JSON.stringify(outcome)).not.toContain('gho_secret')

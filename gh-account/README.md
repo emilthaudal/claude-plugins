@@ -13,6 +13,21 @@ export GH_TOKEN="$(gh auth token --user <account>)" && <the command>
 `gh` reads `GH_TOKEN`, and git reads it through gh's credential helper (the one `gh auth setup-git` installs). Claude
 learns the prefix from the first refusal and usually writes it unprompted after that.
 
+### Worktree-isolated sessions: `gh-as`
+
+A session isolated in a worktree (a background or desk session) only runs plain git commands, and refuses
+`export GH_TOKEN=… && git push` as too complex to verify. For these, `bin/gh-as` does the same as the prefix, as one
+plain command:
+
+```sh
+gh-as emilthaudalwg git push -u origin my-branch
+gh-as emilthaudalwg gh pr create --fill
+```
+
+The account is still named in the command, so auto mode reviews it as written, and the token is read when the command
+runs. The mod lets these through (no `gh` or `git push` starts the command) and the refusal suggests the form for a
+single plain command. Install once with `ln -s "$PWD/gh-account/bin/gh-as" ~/.local/bin/gh-as`.
+
 ### Why refuse instead of rewriting
 
 Versions before 0.3 added the prefix to the command themselves. Auto mode reviews a command before hooks run, and it
